@@ -15,3 +15,5 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 CLAUDE.md
+.direnv/bin
+.direnv
