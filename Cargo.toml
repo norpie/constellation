@@ -6,10 +6,10 @@ members = [
     "libs/*",
 
     # Running services
-    "runtime/*",
+    # "runtime/*",
 
     # Example services
-    "examples/*",
+    # "examples/*",
 ]
 
 [workspace.package]

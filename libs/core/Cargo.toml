@@ -1,0 +1,9 @@
+[package]
+name = "constellation-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror = "2"
+serde = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "constellation-core-derive"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = "2"
+quote = "1"
+proc-macro2 = "1"
