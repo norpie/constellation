@@ -149,6 +149,29 @@ impl TcpTransportListener {
     pub fn local_addr(&self) -> Result<SocketAddr> {
         self.listener.local_addr().map_err(Into::into)
     }
+
+    /// Close the listener
+    ///
+    /// Note: Tokio's TcpListener doesn't have an explicit close,
+    /// cleanup happens on drop. This is a no-op for compatibility.
+    pub async fn close(&mut self) -> Result<()> {
+        // TcpListener cleanup happens on drop
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::transport::TransportListener for TcpTransportListener {
+    type Transport = TcpTransport;
+
+    async fn accept(&self) -> Result<Self::Transport> {
+        let (stream, _) = self.listener.accept().await?;
+        Ok(TcpTransport::from_stream(stream))
+    }
+
+    async fn close(&mut self) -> Result<()> {
+        self.close().await
+    }
 }
 
 /// Builder for configuring TCP transport

@@ -147,12 +147,32 @@ impl UnixTransportListener {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// Close the listener and remove the socket file
+    pub async fn close(&mut self) -> Result<()> {
+        std::fs::remove_file(&self.path)?;
+        Ok(())
+    }
 }
 
 impl Drop for UnixTransportListener {
     fn drop(&mut self) {
         // Clean up socket file on drop
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::transport::TransportListener for UnixTransportListener {
+    type Transport = UnixTransport;
+
+    async fn accept(&self) -> Result<Self::Transport> {
+        let (stream, _) = self.listener.accept().await?;
+        Ok(UnixTransport::from_stream(stream))
+    }
+
+    async fn close(&mut self) -> Result<()> {
+        self.close().await
     }
 }
 
