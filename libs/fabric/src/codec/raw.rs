@@ -10,6 +10,10 @@ use crate::error::{Error, Result};
 pub struct RawCodec;
 
 impl Codec for RawCodec {
+    fn name(&self) -> &str {
+        "raw"
+    }
+
     fn encode<T: Serialize>(&self, value: &T) -> Result<Vec<u8>> {
         // This is a bit hacky but works for Vec<u8>
         bincode::serialize(value).map_err(|e| Error::Codec(e.to_string()))

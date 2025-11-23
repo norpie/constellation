@@ -58,6 +58,10 @@ impl TcpTransport {
 
 #[async_trait::async_trait]
 impl Transport for TcpTransport {
+    fn name(&self) -> &str {
+        "tcp"
+    }
+
     async fn send(&mut self, bytes: &[u8]) -> Result<()> {
         let send_op = async {
             // Write length prefix (4 bytes, big-endian)

@@ -48,6 +48,10 @@ impl UnixTransport {
 
 #[async_trait::async_trait]
 impl Transport for UnixTransport {
+    fn name(&self) -> &str {
+        "unix"
+    }
+
     async fn send(&mut self, bytes: &[u8]) -> Result<()> {
         let send_op = async {
             // Write length prefix (4 bytes, big-endian)

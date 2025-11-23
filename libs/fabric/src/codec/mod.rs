@@ -10,6 +10,9 @@ pub use self::raw::RawCodec;
 
 /// Codec trait for serializing and deserializing messages
 pub trait Codec: Send + Sync {
+    /// Return the name of this codec type
+    fn name(&self) -> &str;
+
     /// Encode a value into bytes
     fn encode<T: Serialize>(&self, value: &T) -> Result<Vec<u8>>;
 

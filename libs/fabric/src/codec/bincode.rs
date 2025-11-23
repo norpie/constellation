@@ -8,6 +8,10 @@ use crate::error::{Error, Result};
 pub struct BincodeCodec;
 
 impl Codec for BincodeCodec {
+    fn name(&self) -> &str {
+        "bincode"
+    }
+
     fn encode<T: Serialize>(&self, value: &T) -> Result<Vec<u8>> {
         bincode::serialize(value).map_err(|e| Error::Codec(e.to_string()))
     }

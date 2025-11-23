@@ -11,6 +11,9 @@ pub use self::unix::{UnixTransport, UnixTransportBuilder, UnixTransportListener}
 /// Each transport instance represents a single connection.
 #[async_trait::async_trait]
 pub trait Transport: Send + Sync {
+    /// Return the name of this transport type
+    fn name(&self) -> &str;
+
     /// Send bytes over the transport
     async fn send(&mut self, bytes: &[u8]) -> Result<()>;
 
