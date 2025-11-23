@@ -300,14 +300,25 @@ async fn login(...) -> Result<Response, Error> { ... }
 struct LoginHandler;
 
 impl Handler for LoginHandler {
-    async fn call(&self, node: &Node, request: &RpcRequest, codec: &dyn Codec)
-        -> Result<Vec<u8>, (ErrorCategory, Vec<u8>)>
+    async fn call(&self, node: &Node, request: &RpcRequest, codec_name: &str)
+        -> Result<Vec<u8>>
     {
+        // Get codec factory and create typed codec
+        let factory = node.get_codec_factory(codec_name)?;
+        let codec = factory.create_typed::<LoginRequest, LoginResponse>();
+
         // Panic catching with AssertUnwindSafe
-        // Extract dependencies from node.data
         // Decode request
+        let req = codec.decode_request(&request.payload)?;
+
+        // Extract dependencies from node.data
+        let db: Data<DbPool> = node.extract().ok_or(...)?;
+
         // Call actual handler
-        // Encode response or error
+        let response = login(req, db).await?;
+
+        // Encode response
+        codec.encode_response(&response)
     }
 }
 
@@ -422,6 +433,67 @@ let db: Data<DbPool> = node.extract()
     .ok_or(RpcError::MissingDependency)?;
 ```
 
+## Codec Factory Pattern
+
+The `Codec` trait from fabric has generic methods, making it not object-safe (can't use `Box<dyn Codec>`). The factory pattern solves this for dynamic handler dispatch:
+
+**TypedCodec - Object-safe trait:**
+```rust
+pub trait TypedCodec<Req, Resp>: Send + Sync {
+    fn decode_request(&self, bytes: &[u8]) -> Result<Req>;
+    fn encode_response(&self, response: &Resp) -> Result<Vec<u8>>;
+}
+```
+
+**CodecFactory - Creates TypedCodec instances:**
+```rust
+pub trait CodecFactory: Send + Sync {
+    fn create_typed<Req, Resp>(&self) -> Box<dyn TypedCodec<Req, Resp>>
+    where
+        Req: for<'de> Deserialize<'de> + Send + Sync + 'static,
+        Resp: Serialize + Send + Sync + 'static;
+}
+```
+
+**CodecAdapter - Wraps Codec into TypedCodec:**
+```rust
+struct CodecAdapter<C, Req, Resp> {
+    codec: C,
+    _phantom: PhantomData<(Req, Resp)>,
+}
+
+impl<C: Codec, Req, Resp> TypedCodec<Req, Resp> for CodecAdapter<C, Req, Resp> {
+    // Delegates to C::decode and C::encode
+}
+```
+
+**Built-in Factories:**
+- `BincodeFactory` - Creates TypedCodec wrapping `BincodeCodec`
+- `RawCodecFactory` - Creates TypedCodec wrapping `RawCodec`
+
+**Registration:**
+```rust
+Node::builder()
+    .register_codec("bincode", BincodeFactory)
+    .register_codec("protobuf", ProtobufFactory)  // External codec
+```
+
+**Usage in handlers:**
+```rust
+let factory = node.get_codec_factory(codec_name)?;
+let codec = factory.create_typed::<LoginRequest, LoginResponse>();
+let req = codec.decode_request(&request.payload)?;
+```
+
+**Performance:**
+- Box allocation per request (~10-50ns overhead)
+- Dynamic dispatch via vtable (~1-5ns per call)
+- Total overhead negligible compared to actual encoding/network
+
+**Type bounds:**
+- `Send + Sync` required for thread-safety (handlers run in async tasks)
+- `'static` required for RPC types (no borrowed data over the wire)
+
 ## Address Book
 
 **Structure:**
@@ -444,15 +516,15 @@ let db: Data<DbPool> = node.extract()
 
 **Crate organization:**
 ```
-constellation-raft/     - Separate crate, generic Raft implementation
-constellation-node/     - Public API, RPC, routing, mesh integration
+constellation-node-derive/  - Proc macro crate for #[handler]
+constellation-raft/         - Separate crate, generic Raft implementation
+constellation-node/         - Public API, RPC, routing, mesh integration
   src/
+    codec.rs            - TypedCodec, CodecFactory, built-in factories
     handler.rs          - Handler trait, registration
-    rpc/                - RPC request/response, client
-    routing/            - Route selection, round-robin, constraints
-    mesh/               - Join/leave, transponder
+    rpc.rs              - RPC request/response types, ErrorCategory
     error.rs            - Error types
-    extractor.rs        - Data<T> mechanism
+    lib.rs              - Re-exports, Node struct placeholder
 ```
 
 **Testing:**
