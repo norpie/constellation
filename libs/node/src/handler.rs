@@ -7,12 +7,14 @@ use crate::error::Result;
 pub trait Handler: Send + Sync {
     /// Handle an RPC request
     ///
-    /// The raw bytes from the request will be decoded by the handler
-    /// and the response will be encoded back to bytes
+    /// The codec_name identifies which codec should be used to decode the request
+    /// payload and encode the response. Handlers use Node::get_codec_factory to
+    /// obtain a factory and create a typed codec instance.
     async fn call(
         &self,
         node: &crate::Node,
         request: &crate::rpc::RpcRequest,
+        codec_name: &str,
     ) -> Result<Vec<u8>>;
 }
 
