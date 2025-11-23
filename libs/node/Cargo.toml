@@ -5,3 +5,18 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
+constellation-core = { path = "../core" }
+constellation-fabric = { path = "../fabric" }
+constellation-node-derive = { path = "../node-derive" }
+
+tokio.workspace = true
+serde.workspace = true
+
+uuid = { version = "1", features = ["v4", "serde"] }
+inventory = "0.3"
+async-trait = "0.1"
+anyhow = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

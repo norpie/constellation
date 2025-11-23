@@ -1,5 +1,5 @@
 [package]
-name = "constellation-core-derive"
+name = "constellation-node-derive"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -8,6 +8,6 @@ authors.workspace = true
 proc-macro = true
 
 [dependencies]
-syn = "2"
+syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
