@@ -21,6 +21,12 @@
 - Stack-level defaults with per-service overrides
 - Example spec: "3 user services on NixOS, scale to 10 at 50% load"
 
+**Deployment strategies:**
+- A/B testing: Route percentage of traffic to different service versions
+- Canary deployments: Gradually roll out new versions with automatic rollback
+- Blue-green deployments: Zero-downtime switches between environments
+- Request shadowing: Duplicate traffic to new versions for testing without affecting users
+
 **Storage layer:**
 - dock: image building and storage
 - cargobay: CDN/centralized file management
