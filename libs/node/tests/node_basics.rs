@@ -61,6 +61,7 @@ async fn test_manual_handler_registration() {
 
     let node = Node::builder()
         .service_name("TestService")
+        .auto_discover(false)
         .data(greeting)
         .register("login.v1", &LoginHandler)
         .build()
@@ -86,6 +87,7 @@ async fn test_data_extraction() {
 
     let node = Node::builder()
         .service_name("TestService")
+        .auto_discover(false)
         .data(config)
         .data(42u64) // Multiple data types
         .build()
@@ -116,6 +118,7 @@ async fn test_service_name_required() {
 async fn test_handler_call() {
     let node = Node::builder()
         .service_name("AuthService")
+        .auto_discover(false)
         .data("Welcome".to_string())
         .register("login.v1", &LoginHandler)
         .build()
@@ -152,6 +155,7 @@ async fn test_rpc_client_auto_registered() {
     // Build a node
     let node = Node::builder()
         .service_name("TestService")
+        .auto_discover(false)
         .build()
         .unwrap();
 

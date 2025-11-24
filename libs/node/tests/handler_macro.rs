@@ -43,6 +43,7 @@ async fn test_handler_macro_basic() {
     // Build node
     let node = Node::builder()
         .service_name("TestService")
+        .auto_discover(false)
         .data("Hello".to_string())
         .build()
         .unwrap();
@@ -116,6 +117,7 @@ async fn test_handler_with_rpc_client() {
     // Build node - RpcClient is auto-registered
     let node = Node::builder()
         .service_name("TestService")
+        .auto_discover(false)
         .build()
         .unwrap();
 
