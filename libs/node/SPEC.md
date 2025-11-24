@@ -159,6 +159,26 @@ enum ResponseResult {
 }
 ```
 
+**Wire protocol (efficient framing):**
+
+To avoid double-serialization overhead of `Vec<u8>` within `RpcRequest`, messages use manual framing:
+
+```
+[header_len: u32][header_bytes: ...][payload_bytes: ...]
+```
+
+Where:
+- `header_len`: 4-byte big-endian u32 indicating length of `header_bytes`
+- `header_bytes`: Serialized `RpcHeader { request_id, route }`
+- `payload_bytes`: Already-serialized user request/response (no length prefix, raw bytes)
+
+This format:
+- Avoids nested `Vec<u8>` serialization (saves ~1-5 bytes + memcpy per message)
+- Allows zero-copy payload extraction on receive side
+- Keeps header separate for efficient routing without deserializing payload
+
+The outer Transport layer (TCP/Unix) provides its own length-prefix framing (4-byte big-endian) for the entire frame.
+
 ## Transport/Codec Selection
 
 **Priority order:**
@@ -493,6 +513,44 @@ constellation-node/         - Public API, RPC, routing, mesh integration
     error.rs            - Error types
     lib.rs              - Re-exports, Node struct placeholder
 ```
+
+**Listener setup:**
+
+Nodes use a generic `.listen()` method that accepts any `TransportListener` implementation:
+
+```rust
+let tcp = TcpTransportListener::bind("127.0.0.1:8080".parse()?).await?;
+let unix = UnixTransportListener::bind("/tmp/service.sock").await?;
+
+Node::builder()
+    .service_name("MyService")
+    .listen(tcp, "default")     // zone: "default"
+    .listen(unix, "local")       // zone: "local"
+    .build()?
+    .start().await?;
+```
+
+This design:
+- Is fully extensible - no closed enums, works with any `TransportListener`
+- Uses object-safe wrapper trait internally for heterogeneous storage
+- Allows multiple transports with different zones
+- Custom transports require no changes to node library
+
+**Runtime:**
+
+`Node::start()` spawns:
+- One listener task per configured transport
+- One connection handler task per accepted connection
+- Runs until Ctrl+C signal received
+
+Each connection handler:
+1. Receives frame from transport
+2. Parses RPC frame (header + payload)
+3. Looks up handler by route
+4. Executes handler (with Data<T> injection)
+5. Packs response frame
+6. Sends response
+7. Loops (persistent connection)
 
 **Testing:**
 - Inventory auto-discovery disabled in test builds
