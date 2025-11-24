@@ -1,25 +1,22 @@
+mod handler;
+
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{parse_macro_input, ItemFn};
 
 /// Marks an async function as an RPC handler
 ///
 /// Generates handler registration code and wrapper for dependency extraction
+///
+/// # Example
+/// ```ignore
+/// #[handler]
+/// async fn login(req: LoginRequest, db: Data<DbPool>) -> Result<LoginResponse, MyError> {
+///     // Handler logic
+/// }
+/// ```
 #[proc_macro_attribute]
-pub fn handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(item as ItemFn);
-
-    // TODO: Implement handler macro
-    // - Validate function signature
-    // - Extract route name from function name
-    // - Parse version from attributes
-    // - Generate Handler trait impl
-    // - Generate inventory registration
-    // - Generate public constant for manual registration
-
-    let output = quote! {
-        #input
-    };
-
-    output.into()
+pub fn handler(attr: TokenStream, item: TokenStream) -> TokenStream {
+    match handler::expand(attr, item) {
+        Ok(tokens) => tokens,
+        Err(err) => err.to_compile_error().into(),
+    }
 }
