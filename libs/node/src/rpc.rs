@@ -56,6 +56,32 @@ pub enum ErrorCategory {
     Unavailable,
 }
 
+/// Trait for successful responses
+///
+/// Any type that implements Serialize can be returned from a handler.
+pub trait Responder: Serialize {}
+
+// Blanket implementation - all Serialize types are valid responses
+impl<T: Serialize> Responder for T {}
+
+/// Trait for error responses that can be categorized for retry logic
+///
+/// Handler errors must implement this trait to provide an ErrorCategory
+/// that determines retry behavior and circuit breaker logic.
+pub trait ErrorResponder: Serialize {
+    /// Return the error category for retry/circuit breaker logic
+    fn error_category(&self) -> ErrorCategory;
+}
+
+/// Internal error type carrying both category and serialized error payload
+///
+/// This is used internally by the handler system. Users don't interact with this directly.
+#[derive(Debug)]
+pub struct HandlerError {
+    pub category: ErrorCategory,
+    pub payload: Vec<u8>,
+}
+
 /// RPC header containing metadata (for wire protocol efficiency)
 ///
 /// This is serialized separately from the payload to avoid nested Vec<u8> serialization.

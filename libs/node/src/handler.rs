@@ -1,18 +1,17 @@
 // Handler trait and registration mechanism
 
-use crate::error::Result;
-
 /// Trait implemented by all RPC handlers
 #[async_trait::async_trait]
 pub trait Handler: Send + Sync {
     /// Handle an RPC request
     ///
     /// Handlers decode the request payload and encode the response using bincode.
+    /// Returns either serialized success bytes or a HandlerError with category + error payload.
     async fn call(
         &self,
         node: &crate::Node,
         request: &crate::rpc::RpcRequest,
-    ) -> Result<Vec<u8>>;
+    ) -> std::result::Result<Vec<u8>, crate::rpc::HandlerError>;
 }
 
 /// Handler registration for inventory discovery

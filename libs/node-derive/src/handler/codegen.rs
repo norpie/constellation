@@ -41,7 +41,7 @@ fn generate_handler_impl(info: &HandlerInfo) -> TokenStream {
                 &self,
                 node: &::constellation_node::Node,
                 request: &::constellation_node::rpc::RpcRequest,
-            ) -> ::constellation_node::Result<Vec<u8>> {
+            ) -> ::std::result::Result<Vec<u8>, ::constellation_node::HandlerError> {
                 #decode_request
                 #extract_deps
                 #call_fn
@@ -56,9 +56,13 @@ fn generate_decode(info: &HandlerInfo) -> TokenStream {
     let request_type = &info.request_type;
 
     quote! {
+        use ::constellation_fabric::codec::Codec as _;
         let codec = ::constellation_fabric::codec::BincodeCodec;
-        let #request_param: #request_type = ::constellation_fabric::codec::Codec::decode(&codec, &request.payload)
-            .map_err(|e| ::constellation_node::Error::Serialization(e.to_string()))?;
+        let #request_param: #request_type = codec.decode(&request.payload)
+            .map_err(|e| ::constellation_node::HandlerError {
+                category: ::constellation_node::ErrorCategory::ClientError,
+                payload: Vec::new(), // Empty error payload - decode errors are framework-level
+            })?;
     }
 }
 
@@ -69,9 +73,10 @@ fn generate_extractors(info: &HandlerInfo) -> TokenStream {
             ExtractorType::Data { inner_ty } => {
                 quote! {
                     let #name: ::constellation_node::Data<#inner_ty> = node.extract()
-                        .ok_or_else(|| ::constellation_node::Error::MissingDependency(
-                            stringify!(#inner_ty).to_string()
-                        ))?;
+                        .ok_or_else(|| ::constellation_node::HandlerError {
+                            category: ::constellation_node::ErrorCategory::ServerError,
+                            payload: Vec::new(), // Empty error payload - missing dependency is framework-level
+                        })?;
                 }
             }
         }
@@ -100,8 +105,27 @@ fn generate_call(info: &HandlerInfo) -> TokenStream {
             #body
         }
 
-        let response = #fn_name(#request_param, #(#extractor_names),*).await
-            .map_err(|e| ::constellation_node::Error::Custom(e.to_string()))?;
+        let response = match #fn_name(#request_param, #(#extractor_names),*).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                // Get error category
+                use ::constellation_node::ErrorResponder;
+                let category = e.error_category();
+
+                // Serialize the error
+                let error_payload = codec.encode(&e)
+                    .map_err(|_| ::constellation_node::HandlerError {
+                        category: ::constellation_node::ErrorCategory::ServerError,
+                        payload: Vec::new(), // Failed to serialize error - framework-level problem
+                    })?;
+
+                // Return HandlerError
+                return Err(::constellation_node::HandlerError {
+                    category,
+                    payload: error_payload,
+                });
+            }
+        };
     }
 }
 
@@ -109,8 +133,11 @@ fn generate_encode(info: &HandlerInfo) -> TokenStream {
     let _response_type = &info.response_type;
 
     quote! {
-        ::constellation_fabric::codec::Codec::encode(&codec, &response)
-            .map_err(|e| ::constellation_node::Error::Serialization(e.to_string()))
+        codec.encode(&response)
+            .map_err(|_| ::constellation_node::HandlerError {
+                category: ::constellation_node::ErrorCategory::ServerError,
+                payload: Vec::new(), // Failed to encode response - framework-level problem
+            })
     }
 }
 

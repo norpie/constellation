@@ -137,16 +137,31 @@ async fn handle_connection(mut transport: Box<dyn Transport>, node: Arc<Node>) -
             payload: payload.to_vec(),
         };
 
-        // Execute handler (may fail)
-        let response_payload = match handler.call(&node, &request).await {
-            Ok(payload) => payload,
-            Err(e) => {
-                eprintln!("Handler error for route {}: {}", header.route, e);
-                // TODO: Proper error response with ErrorCategory
-                // For now, return empty success (temporary)
-                vec![]
+        // Execute handler and build ResponseResult
+        let result = match handler.call(&node, &request).await {
+            Ok(success_payload) => crate::rpc::ResponseResult::Success(success_payload),
+            Err(handler_err) => {
+                eprintln!(
+                    "Handler error for route {} (category: {:?})",
+                    header.route, handler_err.category
+                );
+                crate::rpc::ResponseResult::Error {
+                    category: handler_err.category,
+                    payload: handler_err.payload,
+                }
             }
         };
+
+        // Wrap in RpcResponse
+        let response = crate::rpc::RpcResponse {
+            request_id: header.request_id,
+            result,
+        };
+
+        // Serialize entire RpcResponse
+        let codec = constellation_fabric::codec::BincodeCodec;
+        let response_payload = constellation_fabric::codec::Codec::encode(&codec, &response)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
 
         // Build response frame
         let response_header = crate::rpc::RpcHeader {
