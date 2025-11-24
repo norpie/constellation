@@ -185,3 +185,51 @@ async fn test_rpc_client_auto_registered() {
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not yet implemented"));
 }
+
+#[tokio::test]
+async fn test_node_id_and_voting_member() {
+    let node = Node::builder()
+        .service_name("TestService")
+        .id("test-node-123")
+        .voting_member(false)
+        .auto_discover(false)
+        .build()
+        .unwrap();
+
+    assert_eq!(node.node_id(), Some("test-node-123"));
+    assert!(!node.is_voting_member());
+}
+
+#[tokio::test]
+async fn test_node_id_fallback() {
+    let node = Node::builder()
+        .service_name("TestService")
+        .id("original-id")
+        .id_fallback(|original| format!("{}-fallback", original))
+        .auto_discover(false)
+        .build()
+        .unwrap();
+
+    assert_eq!(node.node_id(), Some("original-id"));
+
+    // Test fallback function works
+    if let Some(fallback) = node.id_fallback() {
+        let new_id = fallback("original-id".to_string());
+        assert_eq!(new_id, "original-id-fallback");
+    } else {
+        panic!("Expected fallback function to be set");
+    }
+}
+
+#[tokio::test]
+async fn test_default_voting_member() {
+    let node = Node::builder()
+        .service_name("TestService")
+        .auto_discover(false)
+        .build()
+        .unwrap();
+
+    // Should default to true (voting member)
+    assert!(node.is_voting_member());
+    assert_eq!(node.node_id(), None); // No ID set
+}
