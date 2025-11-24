@@ -66,6 +66,7 @@ pub struct NodeBuilder {
     service_name: Option<String>,
     data: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     routes: HashMap<String, &'static dyn Handler>,
+    auto_discover: bool,
 }
 
 impl NodeBuilder {
@@ -75,6 +76,7 @@ impl NodeBuilder {
             service_name: None,
             data: HashMap::new(),
             routes: HashMap::new(),
+            auto_discover: true,
         }
     }
 
@@ -103,10 +105,36 @@ impl NodeBuilder {
         self
     }
 
+    /// Enable or disable automatic handler discovery via inventory
+    ///
+    /// When enabled (default), all handlers marked with #[handler] are automatically
+    /// registered at build time. Disable this for tests where you want manual control
+    /// over which handlers are registered.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Production: auto-discover all handlers
+    /// Node::builder()
+    ///     .service_name("MyService")
+    ///     .build();
+    ///
+    /// // Tests: manual registration only
+    /// Node::builder()
+    ///     .service_name("MyService")
+    ///     .auto_discover(false)
+    ///     .register("method.v1", &MY_HANDLER)
+    ///     .build();
+    /// ```
+    pub fn auto_discover(mut self, enable: bool) -> Self {
+        self.auto_discover = enable;
+        self
+    }
+
     /// Build the Node
     ///
     /// This will:
     /// - Validate service name is set
+    /// - Auto-discover handlers via inventory (if enabled)
     /// - Prepend service name to all routes
     /// - Register built-in handlers
     /// - Auto-register RpcClient as Data<RpcClient>
@@ -115,11 +143,26 @@ impl NodeBuilder {
             .service_name
             .ok_or_else(|| Error::Custom("Service name is required".to_string()))?;
 
-        // Prepend service name to all user routes
+        // Start with manually registered routes
         let mut routes = HashMap::new();
         for (route, handler) in self.routes {
             let full_route = format!("{}.{}", service_name, route);
             routes.insert(full_route, handler);
+        }
+
+        // Auto-discover handlers via inventory if enabled
+        if self.auto_discover {
+            for registration in inventory::iter::<crate::handler::HandlerRegistration> {
+                let route = format!(
+                    "{}.{}.v{}",
+                    service_name, registration.method, registration.version
+                );
+
+                // Skip if already manually registered (manual takes precedence)
+                if !routes.contains_key(&route) {
+                    routes.insert(route, registration.handler);
+                }
+            }
         }
 
         // Auto-register RpcClient
