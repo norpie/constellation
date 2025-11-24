@@ -300,25 +300,22 @@ async fn login(...) -> Result<Response, Error> { ... }
 struct LoginHandler;
 
 impl Handler for LoginHandler {
-    async fn call(&self, node: &Node, request: &RpcRequest, codec_name: &str)
+    async fn call(&self, node: &Node, request: &RpcRequest)
         -> Result<Vec<u8>>
     {
-        // Get codec factory and create typed codec
-        let factory = node.get_codec_factory(codec_name)?;
-        let codec = factory.create_typed::<LoginRequest, LoginResponse>();
-
-        // Panic catching with AssertUnwindSafe
-        // Decode request
-        let req = codec.decode_request(&request.payload)?;
+        // Decode request with bincode
+        let codec = BincodeCodec;
+        let req: LoginRequest = codec.decode(&request.payload)?;
 
         // Extract dependencies from node.data
         let db: Data<DbPool> = node.extract().ok_or(...)?;
 
-        // Call actual handler
-        let response = login(req, db).await?;
+        // Call actual handler function
+        let response = login(req, db).await
+            .map_err(|e| Error::Custom(e.to_string()))?;
 
-        // Encode response
-        codec.encode_response(&response)
+        // Encode response with bincode
+        codec.encode(&response)
     }
 }
 
@@ -433,66 +430,36 @@ let db: Data<DbPool> = node.extract()
     .ok_or(RpcError::MissingDependency)?;
 ```
 
-## Codec Factory Pattern
+## Codec Strategy
 
-The `Codec` trait from fabric has generic methods, making it not object-safe (can't use `Box<dyn Codec>`). The factory pattern solves this for dynamic handler dispatch:
+**Current Implementation (MVP):**
+All handlers use `BincodeCodec` directly. This avoids object-safety issues with generic traits and keeps the implementation simple.
 
-**TypedCodec - Object-safe trait:**
 ```rust
-pub trait TypedCodec<Req, Resp>: Send + Sync {
-    fn decode_request(&self, bytes: &[u8]) -> Result<Req>;
-    fn encode_response(&self, response: &Resp) -> Result<Vec<u8>>;
-}
+// In generated handler code:
+let codec = BincodeCodec;
+let req: LoginRequest = codec.decode(&request.payload)?;
+// ... handler logic ...
+codec.encode(&response)?
 ```
 
-**CodecFactory - Creates TypedCodec instances:**
+**Future: Codec Factory Pattern (Deferred)**
+
+The `Codec` trait has generic methods, making it not object-safe (`Box<dyn Codec>` is not allowed). A factory pattern could solve this, but introduces complexity:
+
 ```rust
+// Investigated but not implemented:
 pub trait CodecFactory: Send + Sync {
-    fn create_typed<Req, Resp>(&self) -> Box<dyn TypedCodec<Req, Resp>>
-    where
-        Req: for<'de> Deserialize<'de> + Send + Sync + 'static,
-        Resp: Serialize + Send + Sync + 'static;
+    fn create_typed<Req, Resp>(&self) -> Box<dyn TypedCodec<Req, Resp>>;
 }
+// Problem: CodecFactory itself is not object-safe (generic method)
 ```
 
-**CodecAdapter - Wraps Codec into TypedCodec:**
-```rust
-struct CodecAdapter<C, Req, Resp> {
-    codec: C,
-    _phantom: PhantomData<(Req, Resp)>,
-}
-
-impl<C: Codec, Req, Resp> TypedCodec<Req, Resp> for CodecAdapter<C, Req, Resp> {
-    // Delegates to C::decode and C::encode
-}
-```
-
-**Built-in Factories:**
-- `BincodeFactory` - Creates TypedCodec wrapping `BincodeCodec`
-- `RawCodecFactory` - Creates TypedCodec wrapping `RawCodec`
-
-**Registration:**
-```rust
-Node::builder()
-    .register_codec("bincode", BincodeFactory)
-    .register_codec("protobuf", ProtobufFactory)  // External codec
-```
-
-**Usage in handlers:**
-```rust
-let factory = node.get_codec_factory(codec_name)?;
-let codec = factory.create_typed::<LoginRequest, LoginResponse>();
-let req = codec.decode_request(&request.payload)?;
-```
-
-**Performance:**
-- Box allocation per request (~10-50ns overhead)
-- Dynamic dispatch via vtable (~1-5ns per call)
-- Total overhead negligible compared to actual encoding/network
-
-**Type bounds:**
-- `Send + Sync` required for thread-safety (handlers run in async tasks)
-- `'static` required for RPC types (no borrowed data over the wire)
+**Why Deferred:**
+- Object-safety issues cascade: solving Codec requires TypedCodec factory, which itself isn't object-safe
+- Bincode is sufficient for MVP
+- Can revisit when codec pluggability becomes a requirement
+- May require rethinking the entire approach (e.g., macro-based codec selection)
 
 ## Address Book
 
