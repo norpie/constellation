@@ -85,3 +85,56 @@ async fn test_handler_macro_with_version() {
     // We'll just verify it compiles and the constant exists
     let _handler = &ECHO_V2_HANDLER;
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CallOtherServiceRequest {
+    user_id: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+struct CallOtherServiceResponse {
+    result: String,
+}
+
+// Handler that extracts RpcClient to make calls to other services
+#[handler]
+async fn call_other_service(
+    req: CallOtherServiceRequest,
+    _rpc: Data<constellation_node::RpcClient>,
+) -> Result<CallOtherServiceResponse, MyError> {
+    // In a real handler, you would use rpc to make calls to other services
+    // For now, just verify we can extract it
+    Ok(CallOtherServiceResponse {
+        result: format!("Would call other service for user {}", req.user_id),
+    })
+}
+
+#[tokio::test]
+async fn test_handler_with_rpc_client() {
+    use constellation_fabric::codec::{BincodeCodec, Codec};
+
+    // Build node - RpcClient is auto-registered
+    let node = Node::builder()
+        .service_name("TestService")
+        .build()
+        .unwrap();
+
+    // Create request
+    let codec = BincodeCodec;
+    let req = CallOtherServiceRequest { user_id: 123 };
+    let payload = codec.encode(&req).unwrap();
+
+    let request = RpcRequest {
+        request_id: Uuid::new_v4(),
+        route: "TestService.call_other_service.v1".to_string(),
+        payload,
+    };
+
+    // Call handler - it should be able to extract RpcClient
+    let handler = &CALL_OTHER_SERVICE_HANDLER;
+    let response_bytes = handler.call(&node, &request).await.unwrap();
+
+    // Decode response
+    let response: CallOtherServiceResponse = codec.decode(&response_bytes).unwrap();
+    assert_eq!(response.result, "Would call other service for user 123");
+}

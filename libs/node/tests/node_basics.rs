@@ -144,3 +144,29 @@ async fn test_handler_call() {
     assert_eq!(response.token, "Welcome-alice-token");
     assert_eq!(response.user_id, 42);
 }
+
+#[tokio::test]
+async fn test_rpc_client_auto_registered() {
+    use constellation_node::RpcClient;
+
+    // Build a node
+    let node = Node::builder()
+        .service_name("TestService")
+        .build()
+        .unwrap();
+
+    // Verify RpcClient is automatically registered
+    let rpc: Data<RpcClient> = node
+        .extract()
+        .expect("RpcClient should be auto-registered");
+
+    // Verify we can create a call (even though it won't succeed yet)
+    let result = rpc
+        .call::<(), ()>("SomeService.method.v1", &())
+        .expect("Serialization should succeed")
+        .await;
+
+    // Should fail with "not implemented" error since runtime isn't ready
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("not yet implemented"));
+}
