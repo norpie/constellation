@@ -16,7 +16,7 @@ struct PingResponse {
     reply: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct TestError(String);
 
 impl std::fmt::Display for TestError {
@@ -26,6 +26,12 @@ impl std::fmt::Display for TestError {
 }
 
 impl std::error::Error for TestError {}
+
+impl constellation_node::ErrorResponder for TestError {
+    fn error_category(&self) -> constellation_node::ErrorCategory {
+        constellation_node::ErrorCategory::ServerError
+    }
+}
 
 // Handler that should be auto-discovered
 #[handler]

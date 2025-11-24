@@ -29,17 +29,25 @@ impl Handler for LoginHandler {
         &self,
         node: &Node,
         request: &RpcRequest,
-    ) -> constellation_node::Result<Vec<u8>> {
+    ) -> std::result::Result<Vec<u8>, constellation_node::HandlerError> {
         // Decode request using bincode
         let codec = BincodeCodec;
         let req: LoginRequest = codec
             .decode(&request.payload)
-            .map_err(|e| constellation_node::Error::Serialization(e.to_string()))?;
+            .map_err(|e| {
+                constellation_node::HandlerError {
+                    category: constellation_node::ErrorCategory::ClientError,
+                    payload: codec.encode(&format!("Decode error: {}", e)).unwrap_or_default(),
+                }
+            })?;
 
         // Extract data (in real handler, this would be db connection etc.)
-        let greeting: Data<String> = node
-            .extract()
-            .ok_or_else(|| constellation_node::Error::MissingDependency("String".to_string()))?;
+        let greeting: Data<String> = node.extract().ok_or_else(|| {
+            constellation_node::HandlerError {
+                category: constellation_node::ErrorCategory::ServerError,
+                payload: codec.encode(&"Missing dependency: String").unwrap_or_default(),
+            }
+        })?;
 
         // Simple logic
         let response = LoginResponse {
@@ -48,9 +56,12 @@ impl Handler for LoginHandler {
         };
 
         // Encode response
-        codec
-            .encode(&response)
-            .map_err(|e| constellation_node::Error::Serialization(e.to_string()))
+        codec.encode(&response).map_err(|e| {
+            constellation_node::HandlerError {
+                category: constellation_node::ErrorCategory::ServerError,
+                payload: codec.encode(&format!("Encode error: {}", e)).unwrap_or_default(),
+            }
+        })
     }
 }
 

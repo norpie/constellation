@@ -17,7 +17,7 @@ struct EchoResponse {
     prefix: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct MyError(String);
 
 impl std::fmt::Display for MyError {
@@ -27,6 +27,12 @@ impl std::fmt::Display for MyError {
 }
 
 impl std::error::Error for MyError {}
+
+impl constellation_node::ErrorResponder for MyError {
+    fn error_category(&self) -> constellation_node::ErrorCategory {
+        constellation_node::ErrorCategory::ServerError
+    }
+}
 
 #[handler]
 async fn echo(req: EchoRequest, prefix: Data<String>) -> Result<EchoResponse, MyError> {
