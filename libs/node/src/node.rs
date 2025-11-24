@@ -2,6 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::handler::Handler;
+use constellation_fabric::transport::{Transport, TransportListener};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -37,8 +38,9 @@ impl<T> Deref for Data<T> {
 /// Node represents a service in the mesh
 pub struct Node {
     service_name: String,
-    data: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
-    routes: HashMap<String, &'static dyn Handler>,
+    data: Arc<HashMap<TypeId, Box<dyn Any + Send + Sync>>>,
+    routes: Arc<HashMap<String, &'static dyn Handler>>,
+    listeners: Vec<(Box<dyn ListenerHandle>, String)>,
 }
 
 impl Node {
@@ -59,6 +61,127 @@ impl Node {
     pub fn service_name(&self) -> &str {
         &self.service_name
     }
+
+    /// Start the node runtime
+    ///
+    /// Spawns listener tasks for all configured transports and begins accepting
+    /// incoming RPC requests. This method runs until a shutdown signal is received
+    /// (Ctrl+C).
+    ///
+    /// # Example
+    /// ```ignore
+    /// let node = Node::builder()
+    ///     .service_name("MyService")
+    ///     .listen(tcp_listener, "default")
+    ///     .build()?;
+    ///
+    /// node.start().await?; // Runs forever
+    /// ```
+    pub async fn start(mut self) -> Result<()> {
+        // Extract listeners before wrapping in Arc
+        let listeners = std::mem::take(&mut self.listeners);
+        let node = Arc::new(self);
+
+        // Spawn a task for each listener
+        for (listener, zone) in listeners {
+            let node_clone = Arc::clone(&node);
+
+            tokio::spawn(async move {
+                loop {
+                    match listener.accept_connection().await {
+                        Ok(transport) => {
+                            let node = Arc::clone(&node_clone);
+                            tokio::spawn(async move {
+                                if let Err(e) = handle_connection(transport, node).await {
+                                    eprintln!("Connection error: {}", e);
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            eprintln!("Accept error on zone {}: {}", zone, e);
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+
+        // Wait for shutdown signal
+        tokio::signal::ctrl_c()
+            .await
+            .map_err(|e| Error::Custom(format!("Failed to listen for shutdown signal: {}", e)))?;
+
+        Ok(())
+    }
+}
+
+/// Handle a single connection - receive requests, dispatch to handlers, send responses
+async fn handle_connection(mut transport: Box<dyn Transport>, node: Arc<Node>) -> Result<()> {
+    loop {
+        // Receive frame from transport
+        let frame = transport.receive().await?;
+
+        // Parse RPC frame (our custom format with separate header/payload)
+        let (header, payload) = crate::rpc::parse_frame(&frame)?;
+
+        // Lookup handler for this route
+        let handler = node
+            .routes
+            .get(&header.route)
+            .ok_or_else(|| Error::RouteNotFound(header.route.clone()))?;
+
+        // Build RpcRequest for handler
+        let request = crate::rpc::RpcRequest {
+            request_id: header.request_id,
+            route: header.route.clone(),
+            payload: payload.to_vec(),
+        };
+
+        // Execute handler (may fail)
+        let response_payload = match handler.call(&node, &request).await {
+            Ok(payload) => payload,
+            Err(e) => {
+                eprintln!("Handler error for route {}: {}", header.route, e);
+                // TODO: Proper error response with ErrorCategory
+                // For now, return empty success (temporary)
+                vec![]
+            }
+        };
+
+        // Build response frame
+        let response_header = crate::rpc::RpcHeader {
+            request_id: header.request_id,
+            route: header.route,
+        };
+        let response_frame = crate::rpc::pack_frame(&response_header, &response_payload)?;
+
+        // Send response
+        transport.send(&response_frame).await?;
+    }
+}
+
+/// Object-safe wrapper for TransportListener (internal use)
+///
+/// Allows storing heterogeneous listeners in NodeBuilder
+#[async_trait::async_trait]
+trait ListenerHandle: Send + Sync {
+    /// Accept a connection and return a boxed Transport
+    async fn accept_connection(&self) -> Result<Box<dyn Transport>>;
+}
+
+/// Wrapper that implements ListenerHandle for any TransportListener
+struct ListenerWrapper<L>(L);
+
+#[async_trait::async_trait]
+impl<L> ListenerHandle for ListenerWrapper<L>
+where
+    L: TransportListener + Send + Sync,
+    L::Transport: Transport + Send + Sync + 'static,
+{
+    async fn accept_connection(&self) -> Result<Box<dyn Transport>> {
+        let transport = self.0.accept().await?;
+        Ok(Box::new(transport))
+    }
 }
 
 /// Builder for constructing a Node
@@ -67,6 +190,7 @@ pub struct NodeBuilder {
     data: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     routes: HashMap<String, &'static dyn Handler>,
     auto_discover: bool,
+    listeners: Vec<(Box<dyn ListenerHandle>, String)>, // (listener, zone)
 }
 
 impl NodeBuilder {
@@ -77,6 +201,7 @@ impl NodeBuilder {
             data: HashMap::new(),
             routes: HashMap::new(),
             auto_discover: true,
+            listeners: Vec::new(),
         }
     }
 
@@ -102,6 +227,39 @@ impl NodeBuilder {
     /// The route will be prepended with the service name during build.
     pub fn register(mut self, route: impl Into<String>, handler: &'static dyn Handler) -> Self {
         self.routes.insert(route.into(), handler);
+        self
+    }
+
+    /// Add a listener for any transport type
+    ///
+    /// This method is fully extensible - it works with any implementation of
+    /// `TransportListener`, including custom user-defined transports.
+    ///
+    /// # Arguments
+    /// * `listener` - Any type implementing `TransportListener`
+    /// * `zone` - Network zone identifier (e.g., "default", "internal", "dc-east")
+    ///
+    /// # Example
+    /// ```ignore
+    /// use constellation_fabric::transport::{TcpTransportListener, UnixTransportListener};
+    ///
+    /// let tcp = TcpTransportListener::bind("127.0.0.1:8080".parse()?).await?;
+    /// let unix = UnixTransportListener::bind("/tmp/service.sock").await?;
+    ///
+    /// Node::builder()
+    ///     .service_name("MyService")
+    ///     .listen(tcp, "default")
+    ///     .listen(unix, "local")
+    ///     .build()?
+    ///     .start().await?;
+    /// ```
+    pub fn listen<L>(mut self, listener: L, zone: impl Into<String>) -> Self
+    where
+        L: TransportListener + Send + Sync + 'static,
+        L::Transport: Transport + Send + Sync + 'static,
+    {
+        let wrapped = ListenerWrapper(listener);
+        self.listeners.push((Box::new(wrapped), zone.into()));
         self
     }
 
@@ -177,8 +335,9 @@ impl NodeBuilder {
 
         Ok(Node {
             service_name,
-            data,
-            routes,
+            data: Arc::new(data),
+            routes: Arc::new(routes),
+            listeners: self.listeners,
         })
     }
 }

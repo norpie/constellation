@@ -59,17 +59,23 @@ pub enum ErrorCategory {
 /// RPC header containing metadata (for wire protocol efficiency)
 ///
 /// This is serialized separately from the payload to avoid nested Vec<u8> serialization.
+///
+/// **Note**: This is an internal type exposed for testing. The API is unstable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct RpcHeader {
-    request_id: Uuid,
-    route: String,
+#[doc(hidden)]
+pub struct RpcHeader {
+    pub request_id: Uuid,
+    pub route: String,
 }
 
 /// Pack an RPC frame for transmission
 ///
 /// Creates a frame with format: [header_len: u32][header_bytes][payload_bytes]
 /// This avoids double-serialization of the payload.
-fn pack_frame(header: &RpcHeader, payload: &[u8]) -> crate::Result<Vec<u8>> {
+///
+/// **Note**: This is an internal function exposed for testing. The API is unstable.
+#[doc(hidden)]
+pub fn pack_frame(header: &RpcHeader, payload: &[u8]) -> crate::Result<Vec<u8>> {
     // Serialize header
     let codec = constellation_fabric::codec::BincodeCodec;
     let header_bytes = constellation_fabric::codec::Codec::encode(&codec, header)
@@ -91,7 +97,10 @@ fn pack_frame(header: &RpcHeader, payload: &[u8]) -> crate::Result<Vec<u8>> {
 /// Parse an RPC frame received from the wire
 ///
 /// Returns the deserialized header and a reference to the payload bytes.
-fn parse_frame(frame: &[u8]) -> crate::Result<(RpcHeader, &[u8])> {
+///
+/// **Note**: This is an internal function exposed for testing. The API is unstable.
+#[doc(hidden)]
+pub fn parse_frame(frame: &[u8]) -> crate::Result<(RpcHeader, &[u8])> {
     // Read header length
     if frame.len() < 4 {
         return Err(crate::Error::Custom("Frame too short".to_string()));
