@@ -12,3 +12,4 @@ pub use constellation_node_derive::handler;
 pub use codec::{BincodeFactory, CodecFactory, RawCodecFactory, TypedCodec};
 pub use error::{Error, Result};
 pub use node::{Data, Node, NodeBuilder};
+pub use rpc::{ErrorCategory, RpcClient, RpcRequest, RpcResponse, ResponseResult};

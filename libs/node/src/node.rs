@@ -109,6 +109,7 @@ impl NodeBuilder {
     /// - Validate service name is set
     /// - Prepend service name to all routes
     /// - Register built-in handlers
+    /// - Auto-register RpcClient as Data<RpcClient>
     pub fn build(self) -> Result<Node> {
         let service_name = self
             .service_name
@@ -121,11 +122,19 @@ impl NodeBuilder {
             routes.insert(full_route, handler);
         }
 
+        // Auto-register RpcClient
+        let mut data = self.data;
+        let rpc_client = crate::rpc::RpcClient::new();
+        data.insert(
+            TypeId::of::<Data<crate::rpc::RpcClient>>(),
+            Box::new(Data::new(rpc_client)),
+        );
+
         // TODO: Register built-in handlers (_mesh.*, _raft.*, etc.)
 
         Ok(Node {
             service_name,
-            data: self.data,
+            data,
             routes,
         })
     }
