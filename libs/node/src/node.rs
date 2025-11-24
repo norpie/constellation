@@ -38,6 +38,9 @@ impl<T> Deref for Data<T> {
 /// Node represents a service in the mesh
 pub struct Node {
     service_name: String,
+    node_id: Option<String>,
+    voting_member: bool,
+    id_fallback: Option<Arc<dyn Fn(String) -> String + Send + Sync>>,
     data: Arc<HashMap<TypeId, Box<dyn Any + Send + Sync>>>,
     routes: Arc<HashMap<String, &'static dyn Handler>>,
     listeners: Vec<(Box<dyn ListenerHandle>, String)>,
@@ -60,6 +63,21 @@ impl Node {
     /// Get the service name
     pub fn service_name(&self) -> &str {
         &self.service_name
+    }
+
+    /// Get the node ID (if set)
+    pub fn node_id(&self) -> Option<&str> {
+        self.node_id.as_deref()
+    }
+
+    /// Check if this node is configured as a voting member
+    pub fn is_voting_member(&self) -> bool {
+        self.voting_member
+    }
+
+    /// Get the ID fallback strategy (if set)
+    pub fn id_fallback(&self) -> Option<&Arc<dyn Fn(String) -> String + Send + Sync>> {
+        self.id_fallback.as_ref()
     }
 
     /// Start the node runtime
@@ -202,6 +220,9 @@ where
 /// Builder for constructing a Node
 pub struct NodeBuilder {
     service_name: Option<String>,
+    node_id: Option<String>,
+    voting_member: bool,
+    id_fallback: Option<Arc<dyn Fn(String) -> String + Send + Sync>>,
     data: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     routes: HashMap<String, &'static dyn Handler>,
     auto_discover: bool,
@@ -213,6 +234,9 @@ impl NodeBuilder {
     pub fn new() -> Self {
         Self {
             service_name: None,
+            node_id: None,
+            voting_member: true, // Default to voting member per spec
+            id_fallback: None,
             data: HashMap::new(),
             routes: HashMap::new(),
             auto_discover: true,
@@ -225,6 +249,46 @@ impl NodeBuilder {
     /// This name will be prepended to all handler routes.
     pub fn service_name(mut self, name: impl Into<String>) -> Self {
         self.service_name = Some(name.into());
+        self
+    }
+
+    /// Set the node ID
+    ///
+    /// Node ID must be unique across the mesh. If not set, a random ID will be generated.
+    /// On ID conflict during join, the node will attempt to use the fallback strategy if configured.
+    pub fn id(mut self, node_id: impl Into<String>) -> Self {
+        self.node_id = Some(node_id.into());
+        self
+    }
+
+    /// Set the ID fallback strategy
+    ///
+    /// If the node's ID conflicts with another node in the mesh during join,
+    /// this function will be called with the original ID to generate a new one.
+    ///
+    /// # Example
+    /// ```ignore
+    /// Node::builder()
+    ///     .id("service-node")
+    ///     .id_fallback(|original_id| {
+    ///         format!("{}-{}", original_id, uuid::Uuid::new_v4())
+    ///     })
+    ///     .build()
+    /// ```
+    pub fn id_fallback<F>(mut self, fallback: F) -> Self
+    where
+        F: Fn(String) -> String + Send + Sync + 'static,
+    {
+        self.id_fallback = Some(Arc::new(fallback));
+        self
+    }
+
+    /// Set whether this node joins as a voting member
+    ///
+    /// - `true` (default): Node participates in Raft elections and counts toward quorum
+    /// - `false`: Node is an observer - receives replication but doesn't vote
+    pub fn voting_member(mut self, voting: bool) -> Self {
+        self.voting_member = voting;
         self
     }
 
@@ -350,6 +414,9 @@ impl NodeBuilder {
 
         Ok(Node {
             service_name,
+            node_id: self.node_id,
+            voting_member: self.voting_member,
+            id_fallback: self.id_fallback,
             data: Arc::new(data),
             routes: Arc::new(routes),
             listeners: self.listeners,
