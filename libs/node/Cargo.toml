@@ -8,6 +8,7 @@ authors.workspace = true
 constellation-core = { path = "../core" }
 constellation-fabric = { path = "../fabric" }
 constellation-node-derive = { path = "../node-derive" }
+constellation-raft = { path = "../raft" }
 
 tokio.workspace = true
 serde.workspace = true

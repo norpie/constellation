@@ -38,12 +38,14 @@ impl<T> Deref for Data<T> {
 /// Node represents a service in the mesh
 pub struct Node {
     service_name: String,
-    node_id: Option<String>,
+    node_id: String,
     can_lead: bool,
     id_fallback: Option<Arc<dyn Fn(String) -> String + Send + Sync>>,
     data: Arc<HashMap<TypeId, Box<dyn Any + Send + Sync>>>,
     routes: Arc<HashMap<String, &'static dyn Handler>>,
     listeners: Vec<(Box<dyn ListenerHandle>, String)>,
+    raft: constellation_raft::RaftNode<crate::mesh::AddressBook>,
+    bootstrap_peers: Arc<HashMap<String, crate::mesh::AddressGroup>>, // node_id -> address, used before address book is populated
 }
 
 impl Node {
@@ -65,9 +67,9 @@ impl Node {
         &self.service_name
     }
 
-    /// Get the node ID (if set)
-    pub fn node_id(&self) -> Option<&str> {
-        self.node_id.as_deref()
+    /// Get the node ID
+    pub fn node_id(&self) -> &str {
+        &self.node_id
     }
 
     /// Check if this node can become a leader
@@ -227,6 +229,7 @@ pub struct NodeBuilder {
     routes: HashMap<String, &'static dyn Handler>,
     auto_discover: bool,
     listeners: Vec<(Box<dyn ListenerHandle>, String)>, // (listener, zone)
+    bootstrap_peers: Vec<(String, crate::mesh::AddressGroup)>, // (node_id, address_group)
 }
 
 impl NodeBuilder {
@@ -241,6 +244,7 @@ impl NodeBuilder {
             routes: HashMap::new(),
             auto_discover: true,
             listeners: Vec::new(),
+            bootstrap_peers: Vec::new(),
         }
     }
 
@@ -289,6 +293,30 @@ impl NodeBuilder {
     /// - `false`: Node never starts elections (remains follower), but still votes and counts toward quorum
     pub fn can_lead(mut self, can_lead: bool) -> Self {
         self.can_lead = can_lead;
+        self
+    }
+
+    /// Add a bootstrap peer for initial cluster formation
+    ///
+    /// Bootstrap peers are used to initially discover and join the Raft cluster.
+    /// Once the cluster is formed, the address book (replicated via Raft) is used
+    /// for all peer communication.
+    ///
+    /// # Example
+    /// ```ignore
+    /// Node::builder()
+    ///     .service_name("MyService")
+    ///     .id("node-1")
+    ///     .with_peer("node-2", AddressGroup::single("default", "tcp", "10.0.1.2:8080"))
+    ///     .with_peer("node-3", AddressGroup::single("default", "tcp", "10.0.1.3:8080"))
+    ///     .build()
+    /// ```
+    pub fn with_peer(
+        mut self,
+        node_id: impl Into<String>,
+        address_group: crate::mesh::AddressGroup,
+    ) -> Self {
+        self.bootstrap_peers.push((node_id.into(), address_group));
         self
     }
 
@@ -410,16 +438,43 @@ impl NodeBuilder {
             Box::new(Data::new(rpc_client)),
         );
 
+        // Determine node ID: use provided or generate from service_name + uuid
+        let node_id = self
+            .node_id
+            .unwrap_or_else(|| format!("{}_{}", service_name, uuid::Uuid::new_v4()));
+
+        // Extract peer IDs and create bootstrap address map
+        let peer_ids: Vec<String> = self.bootstrap_peers.iter().map(|(id, _)| id.clone()).collect();
+        let bootstrap_peer_map: HashMap<String, crate::mesh::AddressGroup> =
+            self.bootstrap_peers.into_iter().collect();
+
+        // Create Raft node with peer IDs
+        let raft = constellation_raft::RaftNode::builder()
+            .node_id(node_id.clone())
+            .can_lead(self.can_lead)
+            .peers(peer_ids)
+            .storage(constellation_raft::MemoryStorage::new())
+            .state_machine(crate::mesh::AddressBook::new())
+            .build()?;
+
+        // Auto-register RaftNode
+        data.insert(
+            TypeId::of::<Data<constellation_raft::RaftNode<crate::mesh::AddressBook>>>(),
+            Box::new(Data::new(raft.clone())),
+        );
+
         // TODO: Register built-in handlers (_mesh.*, _raft.*, etc.)
 
         Ok(Node {
             service_name,
-            node_id: self.node_id,
+            node_id,
             can_lead: self.can_lead,
             id_fallback: self.id_fallback,
             data: Arc::new(data),
             routes: Arc::new(routes),
             listeners: self.listeners,
+            raft,
+            bootstrap_peers: Arc::new(bootstrap_peer_map),
         })
     }
 }

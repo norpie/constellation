@@ -1,5 +1,9 @@
 // Mesh discovery and transponder data types
 
+mod address_book;
+
+pub use address_book::{AddressBook, AddressBookCommand, AddressBookResponse};
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

@@ -10,6 +10,9 @@ pub enum Error {
     #[error("Fabric error: {0}")]
     Fabric(#[from] constellation_fabric::error::Error),
 
+    #[error("Raft error: {0}")]
+    Raft(#[from] constellation_raft::Error),
+
     #[error("Serialization error: {0}")]
     Serialization(String),
 

@@ -72,6 +72,7 @@ async fn test_manual_handler_registration() {
 
     let node = Node::builder()
         .service_name("TestService")
+        .id("test-node")
         .auto_discover(false)
         .data(greeting)
         .register("login.v1", &LoginHandler)
@@ -196,7 +197,7 @@ async fn test_node_id_and_can_lead() {
         .build()
         .unwrap();
 
-    assert_eq!(node.node_id(), Some("test-node-123"));
+    assert_eq!(node.node_id(), "test-node-123");
     assert!(!node.can_lead());
 }
 
@@ -210,7 +211,7 @@ async fn test_node_id_fallback() {
         .build()
         .unwrap();
 
-    assert_eq!(node.node_id(), Some("original-id"));
+    assert_eq!(node.node_id(), "original-id");
 
     // Test fallback function works
     if let Some(fallback) = node.id_fallback() {
@@ -231,5 +232,6 @@ async fn test_default_can_lead() {
 
     // Should default to true (can become leader)
     assert!(node.can_lead());
-    assert_eq!(node.node_id(), None); // No ID set
+    // Node ID is auto-generated (service_name + UUID)
+    assert!(node.node_id().starts_with("TestService_"));
 }
