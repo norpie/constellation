@@ -1,5 +1,6 @@
 use crate::Result;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 /// State machine that processes committed log entries
 ///
@@ -9,16 +10,29 @@ use async_trait::async_trait;
 ///
 /// All methods must be deterministic - given the same sequence of commands,
 /// all state machines must produce identical results.
+///
+/// The associated types allow strongly-typed commands and responses while
+/// keeping the encoding/decoding logic in the Raft layer.
 #[async_trait]
 pub trait StateMachine: Send {
+    /// The command type this state machine accepts
+    ///
+    /// Must be serializable so Raft can store it in the log.
+    type Command: Serialize + for<'de> Deserialize<'de> + Send;
+
+    /// The response type this state machine produces
+    ///
+    /// Must be serializable so it can be sent back to clients.
+    type Response: Serialize + for<'de> Deserialize<'de> + Send;
+
     /// Apply a command to the state machine
     ///
     /// This is called in log order for each committed entry. The command
-    /// bytes are opaque to Raft - the state machine interprets them.
+    /// is already deserialized by Raft.
     ///
     /// Returns the result of applying the command (e.g., success/error response
     /// that can be sent back to the client).
-    async fn apply(&mut self, command: Vec<u8>) -> Result<Vec<u8>>;
+    async fn apply(&mut self, command: Self::Command) -> Result<Self::Response>;
 
     /// Create a snapshot of the current state
     ///

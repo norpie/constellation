@@ -1,4 +1,5 @@
 use crate::{Error, LogIndex, RaftStorage, Result, State, StateMachine, Term};
+use constellation_fabric::codec::BincodeCodec;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -31,6 +32,7 @@ struct RaftNodeInner<SM: StateMachine> {
     // Storage and state machine
     storage: Box<dyn RaftStorage>,
     state_machine: SM,
+    codec: BincodeCodec,
 
     // Volatile state (all servers)
     state: State,
@@ -202,6 +204,7 @@ impl<SM: StateMachine> RaftNodeBuilder<SM> {
             peers: self.peers,
             storage,
             state_machine,
+            codec: BincodeCodec,
             state: State::Follower,
             commit_index: 0,
             last_applied: 0,
@@ -223,12 +226,23 @@ mod tests {
     use crate::MemoryStorage;
 
     // Simple test state machine
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct TestCommand;
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct TestResponse;
+
     struct TestStateMachine;
 
     #[async_trait::async_trait]
     impl StateMachine for TestStateMachine {
-        async fn apply(&mut self, _command: Vec<u8>) -> Result<Vec<u8>> {
-            Ok(vec![])
+        type Command = TestCommand;
+        type Response = TestResponse;
+
+        async fn apply(&mut self, _command: Self::Command) -> Result<Self::Response> {
+            Ok(TestResponse)
         }
 
         async fn snapshot(&self) -> Result<Vec<u8>> {
