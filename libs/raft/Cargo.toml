@@ -1,0 +1,15 @@
+[package]
+name = "constellation-raft"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+
+async-trait = "0.1"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
