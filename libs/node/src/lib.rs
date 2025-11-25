@@ -4,6 +4,7 @@ pub mod handler;
 pub mod mesh;
 pub mod rpc;
 
+mod builtin;
 mod node;
 
 // Re-export the derive macro
