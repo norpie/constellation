@@ -106,7 +106,7 @@ struct Capabilities {
 - **Observer**: Receives replication, no voting, doesn't count toward quorum
 - **Voting member**: Full Raft participant, can become leader
 - Nodes join as observer initially
-- Configurable via `Node::builder().voting_member(bool)` (defaults to true)
+- Configurable via `Node::builder().can_lead(bool)` (defaults to true)
 - Self-declared (trust-based)
 
 **Built-in Routes:**
@@ -485,7 +485,7 @@ pub trait CodecFactory: Send + Sync {
 
 **Structure:**
 - Stored in Raft state machine
-- Replicated to all nodes (observers + voting members)
+- Replicated to all nodes (regardless of can_lead setting)
 - Maps: node_id → TransponderData
 - Maps: route → Vec<node_id> (reverse index)
 

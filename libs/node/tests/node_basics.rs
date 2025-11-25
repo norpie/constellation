@@ -187,17 +187,17 @@ async fn test_rpc_client_auto_registered() {
 }
 
 #[tokio::test]
-async fn test_node_id_and_voting_member() {
+async fn test_node_id_and_can_lead() {
     let node = Node::builder()
         .service_name("TestService")
         .id("test-node-123")
-        .voting_member(false)
+        .can_lead(false)
         .auto_discover(false)
         .build()
         .unwrap();
 
     assert_eq!(node.node_id(), Some("test-node-123"));
-    assert!(!node.is_voting_member());
+    assert!(!node.can_lead());
 }
 
 #[tokio::test]
@@ -222,14 +222,14 @@ async fn test_node_id_fallback() {
 }
 
 #[tokio::test]
-async fn test_default_voting_member() {
+async fn test_default_can_lead() {
     let node = Node::builder()
         .service_name("TestService")
         .auto_discover(false)
         .build()
         .unwrap();
 
-    // Should default to true (voting member)
-    assert!(node.is_voting_member());
+    // Should default to true (can become leader)
+    assert!(node.can_lead());
     assert_eq!(node.node_id(), None); // No ID set
 }

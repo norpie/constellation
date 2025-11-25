@@ -39,7 +39,7 @@ impl<T> Deref for Data<T> {
 pub struct Node {
     service_name: String,
     node_id: Option<String>,
-    voting_member: bool,
+    can_lead: bool,
     id_fallback: Option<Arc<dyn Fn(String) -> String + Send + Sync>>,
     data: Arc<HashMap<TypeId, Box<dyn Any + Send + Sync>>>,
     routes: Arc<HashMap<String, &'static dyn Handler>>,
@@ -70,9 +70,9 @@ impl Node {
         self.node_id.as_deref()
     }
 
-    /// Check if this node is configured as a voting member
-    pub fn is_voting_member(&self) -> bool {
-        self.voting_member
+    /// Check if this node can become a leader
+    pub fn can_lead(&self) -> bool {
+        self.can_lead
     }
 
     /// Get the ID fallback strategy (if set)
@@ -221,7 +221,7 @@ where
 pub struct NodeBuilder {
     service_name: Option<String>,
     node_id: Option<String>,
-    voting_member: bool,
+    can_lead: bool,
     id_fallback: Option<Arc<dyn Fn(String) -> String + Send + Sync>>,
     data: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     routes: HashMap<String, &'static dyn Handler>,
@@ -235,7 +235,7 @@ impl NodeBuilder {
         Self {
             service_name: None,
             node_id: None,
-            voting_member: true, // Default to voting member per spec
+            can_lead: true, // Default to allowing leadership
             id_fallback: None,
             data: HashMap::new(),
             routes: HashMap::new(),
@@ -283,12 +283,12 @@ impl NodeBuilder {
         self
     }
 
-    /// Set whether this node joins as a voting member
+    /// Set whether this node can become a leader
     ///
-    /// - `true` (default): Node participates in Raft elections and counts toward quorum
-    /// - `false`: Node is an observer - receives replication but doesn't vote
-    pub fn voting_member(mut self, voting: bool) -> Self {
-        self.voting_member = voting;
+    /// - `true` (default): Node can start elections and become leader
+    /// - `false`: Node never starts elections (remains follower), but still votes and counts toward quorum
+    pub fn can_lead(mut self, can_lead: bool) -> Self {
+        self.can_lead = can_lead;
         self
     }
 
@@ -415,7 +415,7 @@ impl NodeBuilder {
         Ok(Node {
             service_name,
             node_id: self.node_id,
-            voting_member: self.voting_member,
+            can_lead: self.can_lead,
             id_fallback: self.id_fallback,
             data: Arc::new(data),
             routes: Arc::new(routes),
