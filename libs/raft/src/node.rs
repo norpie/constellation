@@ -282,6 +282,135 @@ impl<SM: StateMachine> RaftNode<SM> {
             vote_granted: true,
         })
     }
+
+    /// Handle incoming AppendEntries RPC
+    ///
+    /// Used for both log replication and heartbeats (empty entries).
+    pub async fn handle_append_entries(
+        &self,
+        request: crate::AppendEntriesRequest,
+    ) -> Result<crate::AppendEntriesResponse> {
+        let mut inner = self.inner.write().await;
+
+        let current_term = inner.storage.get_term().await?;
+
+        // Rule 1: Reply false if term < currentTerm
+        if request.term < current_term {
+            return Ok(crate::AppendEntriesResponse {
+                term: current_term,
+                success: false,
+                conflict_term: None,
+                conflict_index: None,
+            });
+        }
+
+        // If RPC contains term >= currentTerm: convert to follower and update term
+        if request.term >= current_term {
+            if request.term > current_term {
+                inner.storage.save_term(request.term).await?;
+                inner.storage.save_voted_for(None).await?;
+            }
+            inner.state = State::Follower;
+            inner.current_leader = Some(request.leader_id.clone());
+            inner.votes_received.clear();
+        }
+
+        // Rule 2: Reply false if log doesn't contain entry at prev_log_index
+        // with matching prev_log_term
+        if request.prev_log_index > 0 {
+            let our_log_len = inner.storage.last_log_index().await?;
+
+            // We don't have an entry at prev_log_index
+            if request.prev_log_index > our_log_len {
+                return Ok(crate::AppendEntriesResponse {
+                    term: request.term,
+                    success: false,
+                    conflict_term: None,
+                    conflict_index: Some(our_log_len + 1),
+                });
+            }
+
+            // We have an entry at prev_log_index, check term matches
+            let prev_entry = inner.storage.get_entry(request.prev_log_index).await?;
+            if let Some(entry) = prev_entry {
+                if entry.term != request.prev_log_term {
+                    // Find the first index of the conflicting term
+                    let conflict_term = entry.term;
+                    let mut conflict_index = request.prev_log_index;
+
+                    // Search backwards to find first entry of this term
+                    while conflict_index > 1 {
+                        if let Some(e) = inner.storage.get_entry(conflict_index - 1).await? {
+                            if e.term != conflict_term {
+                                break;
+                            }
+                            conflict_index -= 1;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    return Ok(crate::AppendEntriesResponse {
+                        term: request.term,
+                        success: false,
+                        conflict_term: Some(conflict_term),
+                        conflict_index: Some(conflict_index),
+                    });
+                }
+            } else {
+                // Entry doesn't exist (shouldn't happen if prev_log_index <= our_log_len)
+                return Ok(crate::AppendEntriesResponse {
+                    term: request.term,
+                    success: false,
+                    conflict_term: None,
+                    conflict_index: Some(request.prev_log_index),
+                });
+            }
+        }
+
+        // Rule 3: If an existing entry conflicts with a new one (same index,
+        // different terms), delete the existing entry and all that follow it
+        if !request.entries.is_empty() {
+            let mut index = request.prev_log_index + 1;
+
+            for (i, new_entry) in request.entries.iter().enumerate() {
+                if let Some(existing_entry) = inner.storage.get_entry(index).await? {
+                    // Conflict: same index, different term
+                    if existing_entry.term != new_entry.term {
+                        // Delete this entry and all following
+                        inner.storage.delete_entries_from(index).await?;
+                        // Append remaining new entries
+                        inner.storage.append_entries(request.entries[i..].to_vec()).await?;
+                        break;
+                    }
+                } else {
+                    // No existing entry, append all remaining new entries
+                    inner.storage.append_entries(request.entries[i..].to_vec()).await?;
+                    break;
+                }
+                index += 1;
+            }
+        }
+
+        // Rule 5: If leaderCommit > commitIndex, set commitIndex =
+        // min(leaderCommit, index of last new entry)
+        if request.leader_commit > inner.commit_index {
+            let last_new_entry_index = if request.entries.is_empty() {
+                request.prev_log_index
+            } else {
+                request.prev_log_index + request.entries.len() as u64
+            };
+
+            inner.commit_index = request.leader_commit.min(last_new_entry_index);
+        }
+
+        Ok(crate::AppendEntriesResponse {
+            term: request.term,
+            success: true,
+            conflict_term: None,
+            conflict_index: None,
+        })
+    }
 }
 
 /// Builder for RaftNode
@@ -687,5 +816,237 @@ mod tests {
 
         let response = node.handle_request_vote(request).await.unwrap();
         assert!(!response.vote_granted); // Log not up-to-date
+    }
+
+    #[tokio::test]
+    async fn test_append_entries_heartbeat() {
+        let node = RaftNode::builder()
+            .node_id("node-1")
+            .state_machine(TestStateMachine)
+            .build()
+            .unwrap();
+
+        // Heartbeat from leader (empty entries)
+        let request = crate::AppendEntriesRequest {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+        };
+
+        let response = node.handle_append_entries(request).await.unwrap();
+
+        assert_eq!(response.term, 1);
+        assert!(response.success);
+        assert_eq!(node.current_term().await.unwrap(), 1);
+        assert_eq!(node.current_leader().await, Some("leader".to_string()));
+        assert_eq!(node.state().await, State::Follower);
+    }
+
+    #[tokio::test]
+    async fn test_append_entries_success() {
+        let node = RaftNode::builder()
+            .node_id("node-1")
+            .state_machine(TestStateMachine)
+            .build()
+            .unwrap();
+
+        // Append some entries
+        let request = crate::AppendEntriesRequest {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![
+                crate::LogEntry::new(1, vec![1]),
+                crate::LogEntry::new(1, vec![2]),
+            ],
+            leader_commit: 0,
+        };
+
+        let response = node.handle_append_entries(request).await.unwrap();
+
+        assert!(response.success);
+
+        // Verify entries were appended
+        let inner = node.inner.read().await;
+        assert_eq!(inner.storage.last_log_index().await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_append_entries_reject_old_term() {
+        let node = RaftNode::builder()
+            .node_id("node-1")
+            .state_machine(TestStateMachine)
+            .build()
+            .unwrap();
+
+        // Advance to term 5
+        node.convert_to_follower(5).await.unwrap();
+
+        // Receive AppendEntries from old term
+        let request = crate::AppendEntriesRequest {
+            term: 3,
+            leader_id: "old-leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+        };
+
+        let response = node.handle_append_entries(request).await.unwrap();
+
+        assert!(!response.success);
+        assert_eq!(response.term, 5);
+    }
+
+    #[tokio::test]
+    async fn test_append_entries_reject_missing_prev() {
+        let mut storage = MemoryStorage::new();
+
+        // We have 2 entries
+        storage
+            .append_entries(vec![
+                crate::LogEntry::new(1, vec![1]),
+                crate::LogEntry::new(1, vec![2]),
+            ])
+            .await
+            .unwrap();
+
+        let node = RaftNode::builder()
+            .node_id("node-1")
+            .storage(storage)
+            .state_machine(TestStateMachine)
+            .build()
+            .unwrap();
+
+        // Leader thinks we have entry at index 5
+        let request = crate::AppendEntriesRequest {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 5,
+            prev_log_term: 1,
+            entries: vec![crate::LogEntry::new(1, vec![99])],
+            leader_commit: 0,
+        };
+
+        let response = node.handle_append_entries(request).await.unwrap();
+
+        assert!(!response.success);
+        assert_eq!(response.conflict_index, Some(3)); // We have 2, next would be 3
+    }
+
+    #[tokio::test]
+    async fn test_append_entries_reject_term_mismatch() {
+        let mut storage = MemoryStorage::new();
+
+        // We have entries from term 1
+        storage.save_term(1).await.unwrap();
+        storage
+            .append_entries(vec![
+                crate::LogEntry::new(1, vec![1]),
+                crate::LogEntry::new(1, vec![2]),
+            ])
+            .await
+            .unwrap();
+
+        let node = RaftNode::builder()
+            .node_id("node-1")
+            .storage(storage)
+            .state_machine(TestStateMachine)
+            .build()
+            .unwrap();
+
+        // Leader thinks index 2 has term 2 (but we have term 1)
+        let request = crate::AppendEntriesRequest {
+            term: 2,
+            leader_id: "leader".to_string(),
+            prev_log_index: 2,
+            prev_log_term: 2, // Wrong! Our entry at index 2 has term 1
+            entries: vec![crate::LogEntry::new(2, vec![99])],
+            leader_commit: 0,
+        };
+
+        let response = node.handle_append_entries(request).await.unwrap();
+
+        assert!(!response.success);
+        assert_eq!(response.conflict_term, Some(1));
+        assert!(response.conflict_index.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_append_entries_commit_advance() {
+        let node = RaftNode::builder()
+            .node_id("node-1")
+            .state_machine(TestStateMachine)
+            .build()
+            .unwrap();
+
+        // Leader sends entries with commit=2
+        let request = crate::AppendEntriesRequest {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![
+                crate::LogEntry::new(1, vec![1]),
+                crate::LogEntry::new(1, vec![2]),
+                crate::LogEntry::new(1, vec![3]),
+            ],
+            leader_commit: 2,
+        };
+
+        node.handle_append_entries(request).await.unwrap();
+
+        // Commit index should advance to 2
+        assert_eq!(node.commit_index().await, 2);
+    }
+
+    #[tokio::test]
+    async fn test_append_entries_conflict_resolution() {
+        let mut storage = MemoryStorage::new();
+
+        // We have conflicting entries from a split brain scenario
+        storage.save_term(2).await.unwrap();
+        storage
+            .append_entries(vec![
+                crate::LogEntry::new(1, vec![1]),
+                crate::LogEntry::new(2, vec![99]), // Conflict at index 2
+                crate::LogEntry::new(2, vec![98]), // This should be deleted
+            ])
+            .await
+            .unwrap();
+
+        let node = RaftNode::builder()
+            .node_id("node-1")
+            .storage(storage)
+            .state_machine(TestStateMachine)
+            .build()
+            .unwrap();
+
+        // Leader sends correct entries
+        let request = crate::AppendEntriesRequest {
+            term: 3,
+            leader_id: "leader".to_string(),
+            prev_log_index: 1,
+            prev_log_term: 1,
+            entries: vec![
+                crate::LogEntry::new(3, vec![2]), // Replaces our term 2 entry
+                crate::LogEntry::new(3, vec![3]),
+            ],
+            leader_commit: 0,
+        };
+
+        let response = node.handle_append_entries(request).await.unwrap();
+        assert!(response.success);
+
+        // Verify log was corrected
+        let inner = node.inner.read().await;
+        assert_eq!(inner.storage.last_log_index().await.unwrap(), 3);
+        let entry2 = inner.storage.get_entry(2).await.unwrap().unwrap();
+        assert_eq!(entry2.term, 3);
+        assert_eq!(entry2.command, vec![2]);
     }
 }
