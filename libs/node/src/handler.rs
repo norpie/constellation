@@ -18,6 +18,7 @@ pub trait Handler: Send + Sync {
 pub struct HandlerRegistration {
     pub method: &'static str,
     pub version: u32,
+    pub route: Option<&'static str>,
     pub handler: &'static dyn Handler,
 }
 
@@ -28,6 +29,16 @@ impl HandlerRegistration {
         Self {
             method,
             version,
+            route: None,
+            handler,
+        }
+    }
+
+    pub const fn with_route(method: &'static str, version: u32, route: &'static str, handler: &'static dyn Handler) -> Self {
+        Self {
+            method,
+            version,
+            route: Some(route),
             handler,
         }
     }

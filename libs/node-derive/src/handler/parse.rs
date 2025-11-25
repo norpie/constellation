@@ -16,6 +16,7 @@ pub struct HandlerInfo {
     pub error_type: Type,
     pub extractors: Vec<Extractor>,
     pub version: u32,
+    pub route: Option<String>,
     pub body: Block,
 }
 
@@ -85,6 +86,7 @@ pub fn parse_handler(input: ItemFn, attrs: HandlerAttributes) -> syn::Result<Han
         error_type,
         extractors,
         version,
+        route: attrs.route,
         body: *input.block,
     })
 }

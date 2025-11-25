@@ -2,12 +2,13 @@
 
 use proc_macro::TokenStream;
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, LitInt, Token};
+use syn::{Ident, LitInt, LitStr, Token};
 
 /// Parsed attributes from #[handler(...)]
 #[derive(Debug, Default)]
 pub struct HandlerAttributes {
     pub version: Option<u32>,
+    pub route: Option<String>,
 }
 
 impl Parse for HandlerAttributes {
@@ -28,6 +29,11 @@ impl Parse for HandlerAttributes {
                     input.parse::<Token![=]>()?;
                     let value: LitInt = input.parse()?;
                     attrs.version = Some(value.base10_parse()?);
+                }
+                "route" => {
+                    input.parse::<Token![=]>()?;
+                    let value: LitStr = input.parse()?;
+                    attrs.route = Some(value.value());
                 }
                 other => {
                     return Err(syn::Error::new_spanned(

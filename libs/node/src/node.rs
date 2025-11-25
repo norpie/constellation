@@ -418,10 +418,15 @@ impl NodeBuilder {
         // Auto-discover handlers via inventory if enabled
         if self.auto_discover {
             for registration in inventory::iter::<crate::handler::HandlerRegistration> {
-                let route = format!(
-                    "{}.{}.v{}",
-                    service_name, registration.method, registration.version
-                );
+                // Use custom route if specified, otherwise construct from service name + method + version
+                let route = if let Some(custom_route) = registration.route {
+                    custom_route.to_string()
+                } else {
+                    format!(
+                        "{}.{}.v{}",
+                        service_name, registration.method, registration.version
+                    )
+                };
 
                 // Skip if already manually registered (manual takes precedence)
                 if !routes.contains_key(&route) {

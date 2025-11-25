@@ -146,13 +146,26 @@ fn generate_inventory(info: &HandlerInfo) -> TokenStream {
     let fn_name_str = info.fn_name.to_string();
     let version = info.version;
 
-    quote! {
-        ::inventory::submit! {
-            ::constellation_node::handler::HandlerRegistration::new(
-                #fn_name_str,
-                #version,
-                &#struct_name
-            )
+    if let Some(route) = &info.route {
+        quote! {
+            ::inventory::submit! {
+                ::constellation_node::handler::HandlerRegistration::with_route(
+                    #fn_name_str,
+                    #version,
+                    #route,
+                    &#struct_name
+                )
+            }
+        }
+    } else {
+        quote! {
+            ::inventory::submit! {
+                ::constellation_node::handler::HandlerRegistration::new(
+                    #fn_name_str,
+                    #version,
+                    &#struct_name
+                )
+            }
         }
     }
 }
