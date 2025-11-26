@@ -2,11 +2,16 @@
 
 use crate::error::{Error, Result};
 use crate::handler::Handler;
+use crate::scheduler::{
+    OverlapPolicy, Schedule, ScheduledTaskConfig, Scheduler, SchedulerCommand,
+};
 use constellation_fabric::transport::{Transport, TransportListener};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
+use std::future::Future;
 use std::ops::Deref;
 use std::sync::Arc;
+use tokio::sync::{mpsc, watch};
 
 /// Wrapper for shared application data
 ///
@@ -46,6 +51,11 @@ pub struct Node {
     listeners: Vec<(Box<dyn ListenerHandle>, String)>,
     raft: constellation_raft::RaftNode<crate::mesh::AddressBook>,
     bootstrap_peers: Arc<HashMap<String, crate::mesh::AddressGroup>>, // node_id -> address, used before address book is populated
+    // Scheduler fields
+    scheduler_rx: Option<mpsc::Receiver<SchedulerCommand>>,
+    scheduler_tx: mpsc::Sender<SchedulerCommand>,
+    shutdown_tx: watch::Sender<bool>,
+    initial_tasks: Vec<ScheduledTaskConfig>,
 }
 
 impl Node {
@@ -84,9 +94,9 @@ impl Node {
 
     /// Start the node runtime
     ///
-    /// Spawns listener tasks for all configured transports and begins accepting
-    /// incoming RPC requests. This method runs until a shutdown signal is received
-    /// (Ctrl+C).
+    /// Spawns listener tasks for all configured transports, starts the scheduler,
+    /// and begins accepting incoming RPC requests. This method runs until a shutdown
+    /// signal is received (Ctrl+C).
     ///
     /// # Example
     /// ```ignore
@@ -98,8 +108,14 @@ impl Node {
     /// node.start().await?; // Runs forever
     /// ```
     pub async fn start(mut self) -> Result<()> {
-        // Extract listeners before wrapping in Arc
+        // Extract fields before wrapping in Arc
         let listeners = std::mem::take(&mut self.listeners);
+        let scheduler_rx = self.scheduler_rx.take();
+        let initial_tasks = std::mem::take(&mut self.initial_tasks);
+        let data = Arc::clone(&self.data);
+        let shutdown_tx = self.shutdown_tx.clone();
+        let scheduler_tx = self.scheduler_tx.clone();
+
         let node = Arc::new(self);
 
         // Spawn a task for each listener
@@ -126,10 +142,49 @@ impl Node {
             });
         }
 
+        // Spawn scheduler loop
+        if let Some(scheduler_rx) = scheduler_rx {
+            let shutdown_rx = shutdown_tx.subscribe();
+            let scheduler_tx_clone = scheduler_tx.clone();
+
+            tokio::spawn(async move {
+                crate::scheduler::run_scheduler_loop(
+                    scheduler_rx,
+                    data,
+                    shutdown_rx,
+                    scheduler_tx_clone,
+                )
+                .await;
+            });
+
+            // Register initial tasks (from builder)
+            for task_config in initial_tasks {
+                let id = crate::scheduler::TaskId::new();
+                let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+
+                let _ = scheduler_tx
+                    .send(SchedulerCommand::Schedule {
+                        id,
+                        name: task_config.name,
+                        schedule: task_config.schedule,
+                        policy: task_config.policy,
+                        task: task_config.task,
+                        response: response_tx,
+                    })
+                    .await;
+            }
+        }
+
         // Wait for shutdown signal
         tokio::signal::ctrl_c()
             .await
             .map_err(|e| Error::Custom(format!("Failed to listen for shutdown signal: {}", e)))?;
+
+        // Signal shutdown to scheduler and tasks
+        let _ = shutdown_tx.send(true);
+
+        // Give tasks a moment to complete gracefully
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         Ok(())
     }
@@ -230,6 +285,7 @@ pub struct NodeBuilder {
     auto_discover: bool,
     listeners: Vec<(Box<dyn ListenerHandle>, String)>, // (listener, zone)
     bootstrap_peers: Vec<(String, crate::mesh::AddressGroup)>, // (node_id, address_group)
+    scheduled_tasks: Vec<ScheduledTaskConfig>,
 }
 
 impl NodeBuilder {
@@ -245,6 +301,7 @@ impl NodeBuilder {
             auto_discover: true,
             listeners: Vec::new(),
             bootstrap_peers: Vec::new(),
+            scheduled_tasks: Vec::new(),
         }
     }
 
@@ -395,6 +452,79 @@ impl NodeBuilder {
         self
     }
 
+    /// Schedule a task to run according to the given schedule
+    ///
+    /// Tasks are executed when `Node::start()` is called. Tasks have access to
+    /// the same extractors as handlers (Data<T>, etc.).
+    ///
+    /// # Example
+    /// ```ignore
+    /// use std::time::Duration;
+    ///
+    /// Node::builder()
+    ///     .service_name("MyService")
+    ///     .schedule(Schedule::every(Duration::from_secs(60)), |ctx| async move {
+    ///         let db: Data<DbPool> = ctx.extract().unwrap();
+    ///         db.cleanup().await;
+    ///     })
+    ///     .build()
+    /// ```
+    pub fn schedule<F, Fut>(mut self, schedule: Schedule, task: F) -> Self
+    where
+        F: Fn(crate::scheduler::TaskContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.scheduled_tasks.push(ScheduledTaskConfig {
+            name: None,
+            schedule,
+            policy: OverlapPolicy::default(),
+            task: Arc::new(task),
+        });
+        self
+    }
+
+    /// Schedule a named task
+    ///
+    /// Named tasks are easier to identify when listing or debugging.
+    pub fn schedule_named<F, Fut>(
+        mut self,
+        name: impl Into<String>,
+        schedule: Schedule,
+        task: F,
+    ) -> Self
+    where
+        F: Fn(crate::scheduler::TaskContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.scheduled_tasks.push(ScheduledTaskConfig {
+            name: Some(name.into()),
+            schedule,
+            policy: OverlapPolicy::default(),
+            task: Arc::new(task),
+        });
+        self
+    }
+
+    /// Schedule a task with custom overlap policy
+    pub fn schedule_with_policy<F, Fut>(
+        mut self,
+        schedule: Schedule,
+        policy: OverlapPolicy,
+        task: F,
+    ) -> Self
+    where
+        F: Fn(crate::scheduler::TaskContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.scheduled_tasks.push(ScheduledTaskConfig {
+            name: None,
+            schedule,
+            policy,
+            task: Arc::new(task),
+        });
+        self
+    }
+
     /// Build the Node
     ///
     /// This will:
@@ -468,6 +598,17 @@ impl NodeBuilder {
             Box::new(Data::new(raft.clone())),
         );
 
+        // Create Scheduler and auto-register
+        let (scheduler, scheduler_rx) = Scheduler::new();
+        let scheduler_tx = scheduler.command_tx();
+        data.insert(
+            TypeId::of::<Data<Scheduler>>(),
+            Box::new(Data::new(scheduler)),
+        );
+
+        // Create shutdown channel
+        let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+
         // TODO: Register built-in handlers (_mesh.*, _raft.*, etc.)
 
         Ok(Node {
@@ -480,6 +621,10 @@ impl NodeBuilder {
             listeners: self.listeners,
             raft,
             bootstrap_peers: Arc::new(bootstrap_peer_map),
+            scheduler_rx: Some(scheduler_rx),
+            scheduler_tx,
+            shutdown_tx,
+            initial_tasks: self.scheduled_tasks,
         })
     }
 }

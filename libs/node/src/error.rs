@@ -28,6 +28,15 @@ pub enum Error {
 
     #[error("{0}")]
     Custom(String),
+
+    #[error("Scheduler error: {0}")]
+    Scheduler(String),
+
+    #[error("Task not found: {0}")]
+    TaskNotFound(String),
+
+    #[error("Cron scheduling not yet implemented")]
+    CronNotImplemented,
 }
 
 impl From<std::io::Error> for Error {
@@ -61,7 +70,10 @@ impl crate::rpc::ErrorResponder for Error {
             | Error::Raft(_)
             | Error::NoCompatibleTransport(_)
             | Error::MissingDependency(_)
-            | Error::Custom(_) => crate::rpc::ErrorCategory::ServerError,
+            | Error::Custom(_)
+            | Error::Scheduler(_)
+            | Error::TaskNotFound(_)
+            | Error::CronNotImplemented => crate::rpc::ErrorCategory::ServerError,
         }
     }
 }

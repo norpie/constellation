@@ -3,6 +3,7 @@ pub mod error;
 pub mod handler;
 pub mod mesh;
 pub mod rpc;
+pub mod scheduler;
 
 mod builtin;
 mod node;
@@ -17,4 +18,7 @@ pub use node::{Data, Node, NodeBuilder};
 pub use rpc::{
     ErrorCategory, ErrorResponder, HandlerError, Responder, RpcClient, RpcRequest, RpcResponse,
     ResponseResult,
+};
+pub use scheduler::{
+    OverlapPolicy, Schedule, Scheduler, TaskContext, TaskHandle, TaskId, TaskInfo, TaskStatus,
 };
