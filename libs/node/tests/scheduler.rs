@@ -675,6 +675,60 @@ async fn test_reset_cancelled_task() {
 }
 
 #[tokio::test]
+async fn test_handle_by_name() {
+    // Test getting a handle by name and using it to reset
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_clone = Arc::clone(&counter);
+
+    let node = Node::builder()
+        .service_name("TestService")
+        .auto_discover(false)
+        .data(counter_clone)
+        .build()
+        .unwrap();
+
+    let scheduler: Data<Scheduler> = node.extract().unwrap();
+
+    // Spawn node in background
+    tokio::spawn(async move {
+        let _ = node.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // Schedule a named task
+    let _handle = scheduler
+        .schedule_named("my_task", Schedule::after(Duration::from_millis(100)), |ctx| async move {
+            let counter: Data<Arc<AtomicU32>> = ctx.extract().unwrap();
+            counter.fetch_add(1, Ordering::SeqCst);
+        })
+        .await
+        .unwrap();
+
+    // Get handle by name
+    let handle = scheduler.handle_by_name("my_task").await;
+    assert!(handle.is_some(), "Should find task by name");
+
+    // Non-existent name returns None
+    let missing = scheduler.handle_by_name("nonexistent").await;
+    assert!(missing.is_none(), "Should not find nonexistent task");
+
+    // Use the handle to reset the timer
+    let handle = handle.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 0, "Task shouldn't have run yet");
+
+    handle.reset_now();
+
+    // After reset, wait 50ms more - still shouldn't have run (timer was reset)
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 0, "Task shouldn't have run after reset");
+
+    // Wait for it to actually fire
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 1, "Task should have run");
+}
+
+#[tokio::test]
 async fn test_builder_schedule() {
     // Test that tasks scheduled via builder work
     let counter = Arc::new(AtomicU32::new(0));
