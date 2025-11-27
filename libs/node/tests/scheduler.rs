@@ -503,6 +503,178 @@ async fn test_cron_not_implemented() {
 }
 
 #[tokio::test]
+async fn test_random_interval() {
+    // Test that RandomInterval runs multiple times with varying delays
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_clone = Arc::clone(&counter);
+
+    let node = Node::builder()
+        .service_name("TestService")
+        .auto_discover(false)
+        .data(counter_clone)
+        .build()
+        .unwrap();
+
+    let scheduler: Data<Scheduler> = node.extract().unwrap();
+
+    // Spawn node in background
+    tokio::spawn(async move {
+        let _ = node.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // Schedule task with random interval between 20-40ms
+    let handle = scheduler
+        .schedule(
+            Schedule::random_interval(Duration::from_millis(20), Duration::from_millis(40)),
+            |ctx| async move {
+                let counter: Data<Arc<AtomicU32>> = ctx.extract().unwrap();
+                counter.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .await
+        .unwrap();
+
+    // Wait for multiple runs (with 20-40ms intervals, should get multiple runs in 200ms)
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Should have run multiple times
+    let count = counter.load(Ordering::SeqCst);
+    assert!(count >= 3, "Expected at least 3 runs, got {}", count);
+
+    // Cancel to stop further runs
+    let cancelled = handle.cancel().await;
+    assert!(cancelled);
+}
+
+#[tokio::test]
+async fn test_task_reset() {
+    // Test that reset() restarts the timer
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_clone = Arc::clone(&counter);
+
+    let node = Node::builder()
+        .service_name("TestService")
+        .auto_discover(false)
+        .data(counter_clone)
+        .build()
+        .unwrap();
+
+    let scheduler: Data<Scheduler> = node.extract().unwrap();
+
+    // Spawn node in background
+    tokio::spawn(async move {
+        let _ = node.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // Schedule task to run after 100ms
+    let handle = scheduler
+        .schedule(Schedule::after(Duration::from_millis(100)), |ctx| async move {
+            let counter: Data<Arc<AtomicU32>> = ctx.extract().unwrap();
+            counter.fetch_add(1, Ordering::SeqCst);
+        })
+        .await
+        .unwrap();
+
+    // Wait 50ms, then reset
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 0, "Task shouldn't have run yet");
+
+    let reset = handle.reset().await;
+    assert!(reset, "Reset should succeed");
+
+    // Wait another 50ms - task still shouldn't have run (timer was reset)
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 0, "Task shouldn't have run after reset");
+
+    // Wait another 100ms - now it should have run
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 1, "Task should have run after reset timeout");
+}
+
+#[tokio::test]
+async fn test_random_interval_reset() {
+    // Test that reset() on RandomInterval picks a new random delay
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_clone = Arc::clone(&counter);
+
+    let node = Node::builder()
+        .service_name("TestService")
+        .auto_discover(false)
+        .data(counter_clone)
+        .build()
+        .unwrap();
+
+    let scheduler: Data<Scheduler> = node.extract().unwrap();
+
+    // Spawn node in background
+    tokio::spawn(async move {
+        let _ = node.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // Schedule task with random interval between 100-150ms
+    let handle = scheduler
+        .schedule(
+            Schedule::random_interval(Duration::from_millis(100), Duration::from_millis(150)),
+            |ctx| async move {
+                let counter: Data<Arc<AtomicU32>> = ctx.extract().unwrap();
+                counter.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .await
+        .unwrap();
+
+    // Reset multiple times before it can fire
+    for _ in 0..5 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let reset = handle.reset().await;
+        assert!(reset, "Reset should succeed");
+    }
+
+    // After 250ms of resets, task shouldn't have run
+    assert_eq!(counter.load(Ordering::SeqCst), 0, "Task shouldn't have run due to resets");
+
+    // Now wait for it to fire
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(counter.load(Ordering::SeqCst) >= 1, "Task should have run after stopping resets");
+
+    handle.cancel().await;
+}
+
+#[tokio::test]
+async fn test_reset_cancelled_task() {
+    // Test that reset() on a cancelled task returns false
+    let node = Node::builder()
+        .service_name("TestService")
+        .auto_discover(false)
+        .build()
+        .unwrap();
+
+    let scheduler: Data<Scheduler> = node.extract().unwrap();
+
+    // Spawn node in background
+    tokio::spawn(async move {
+        let _ = node.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // Schedule and then cancel
+    let handle = scheduler
+        .schedule(Schedule::after(Duration::from_secs(60)), |_| async {})
+        .await
+        .unwrap();
+
+    let cancelled = handle.cancel().await;
+    assert!(cancelled);
+
+    // Reset on cancelled task should fail
+    let reset = handle.reset().await;
+    assert!(!reset, "Reset should fail on cancelled task");
+}
+
+#[tokio::test]
 async fn test_builder_schedule() {
     // Test that tasks scheduled via builder work
     let counter = Arc::new(AtomicU32::new(0));
