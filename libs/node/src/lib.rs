@@ -2,6 +2,7 @@ pub mod codec;
 pub mod error;
 pub mod handler;
 pub mod mesh;
+pub mod router;
 pub mod rpc;
 pub mod scheduler;
 
@@ -19,6 +20,7 @@ pub use rpc::{
     ErrorCategory, ErrorResponder, HandlerError, Responder, RpcClient, RpcRequest, RpcResponse,
     ResponseResult,
 };
+pub use router::{ResolvedTarget, Router, RoutingError};
 pub use scheduler::{
     OverlapPolicy, Schedule, Scheduler, TaskContext, TaskHandle, TaskId, TaskInfo, TaskStatus,
 };

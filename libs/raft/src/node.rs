@@ -109,6 +109,23 @@ impl<SM: StateMachine> RaftNode<SM> {
         inner.peers.clone()
     }
 
+    /// Execute a function with read access to the state machine
+    ///
+    /// This allows external components to read the current state machine state
+    /// without taking ownership or cloning it.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let value = raft.with_state_machine(|sm| sm.get_value("key")).await;
+    /// ```
+    pub async fn with_state_machine<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&SM) -> R,
+    {
+        let inner = self.inner.read().await;
+        f(&inner.state_machine)
+    }
+
     // State transition methods
 
     /// Convert to follower state

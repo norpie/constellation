@@ -565,14 +565,6 @@ impl NodeBuilder {
             }
         }
 
-        // Auto-register RpcClient
-        let mut data = self.data;
-        let rpc_client = crate::rpc::RpcClient::new();
-        data.insert(
-            TypeId::of::<Data<crate::rpc::RpcClient>>(),
-            Box::new(Data::new(rpc_client)),
-        );
-
         // Determine node ID: use provided or generate from service_name + uuid
         let node_id = self
             .node_id
@@ -592,7 +584,25 @@ impl NodeBuilder {
             .state_machine(crate::mesh::AddressBook::new())
             .build()?;
 
-        // Auto-register RaftNode
+        // Create Router (needs node_id and raft)
+        let router = crate::router::Router::new(node_id.clone(), raft.clone());
+
+        // Create RpcClient (needs router)
+        let rpc_client = crate::rpc::RpcClient::new(router.clone());
+
+        // Auto-register components
+        let mut data = self.data;
+
+        data.insert(
+            TypeId::of::<Data<crate::router::Router>>(),
+            Box::new(Data::new(router)),
+        );
+
+        data.insert(
+            TypeId::of::<Data<crate::rpc::RpcClient>>(),
+            Box::new(Data::new(rpc_client)),
+        );
+
         data.insert(
             TypeId::of::<Data<constellation_raft::RaftNode<crate::mesh::AddressBook>>>(),
             Box::new(Data::new(raft.clone())),

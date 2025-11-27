@@ -16,12 +16,9 @@
 // This avoids the overhead of serializing Vec<u8> within RpcRequest.
 // Channel provides outer framing; this is inner framing for efficiency.
 
-use dashmap::DashMap;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
-use std::sync::atomic::AtomicUsize;
-use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -155,12 +152,11 @@ pub fn parse_frame(frame: &[u8]) -> crate::Result<(RpcHeader, &[u8])> {
 ///
 /// RpcClient is automatically registered as Data<RpcClient> in every node
 /// and can be extracted in handlers for making calls to other services.
+///
+/// Uses Router for route resolution and load balancing.
 pub struct RpcClient {
-    /// Per-route round-robin state for load balancing
-    rr_state: Arc<DashMap<String, AtomicUsize>>,
-
-    // Future: address book reference for service discovery
-    // address_book: Arc<RwLock<AddressBook>>,
+    /// Router for resolving routes and peers to connection targets
+    router: crate::router::Router,
 
     // Future: resiliency configuration
     // config: Arc<ResiliencyConfig>,
@@ -168,15 +164,14 @@ pub struct RpcClient {
 
 impl RpcClient {
     /// Create a new RpcClient (internal use only)
-    pub(crate) fn new() -> Self {
-        Self {
-            rr_state: Arc::new(DashMap::new()),
-        }
+    pub(crate) fn new(router: crate::router::Router) -> Self {
+        Self { router }
     }
 
     /// Make an RPC call to another service
     ///
-    /// Serializes the request immediately using bincode. Returns a builder for
+    /// Resolves the route to a peer using round-robin load balancing,
+    /// serializes the request using bincode, and returns a builder for
     /// configuring retry, timeout, and backoff options.
     ///
     /// # Example
@@ -195,14 +190,59 @@ impl RpcClient {
         let payload = constellation_fabric::codec::Codec::encode(&codec, request)
             .map_err(|e| crate::Error::Serialization(e.to_string()))?;
 
-        Ok(RpcCallBuilder::new(self.clone(), route.to_string(), payload))
+        Ok(RpcCallBuilder::new(
+            self.clone(),
+            route.to_string(),
+            None, // No specific peer - use route resolution
+            payload,
+        ))
+    }
+
+    /// Make an RPC call to a specific peer
+    ///
+    /// Bypasses route-based load balancing and sends the request directly
+    /// to the specified peer. Useful for Raft consensus messages and other
+    /// peer-to-peer communication.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let response: VoteResponse = rpc
+    ///     .call_peer("node-2", "_raft.request_vote.v1", &vote_request)?
+    ///     .await?;
+    /// ```
+    pub fn call_peer<Req, Resp>(
+        &self,
+        peer_id: &str,
+        route: &str,
+        request: &Req,
+    ) -> crate::Result<RpcCallBuilder<Resp>>
+    where
+        Req: Serialize,
+        Resp: DeserializeOwned,
+    {
+        // Serialize immediately
+        let codec = constellation_fabric::codec::BincodeCodec;
+        let payload = constellation_fabric::codec::Codec::encode(&codec, request)
+            .map_err(|e| crate::Error::Serialization(e.to_string()))?;
+
+        Ok(RpcCallBuilder::new(
+            self.clone(),
+            route.to_string(),
+            Some(peer_id.to_string()), // Specific peer
+            payload,
+        ))
+    }
+
+    /// Get a reference to the underlying router
+    pub fn router(&self) -> &crate::router::Router {
+        &self.router
     }
 }
 
 impl Clone for RpcClient {
     fn clone(&self) -> Self {
         Self {
-            rr_state: Arc::clone(&self.rr_state),
+            router: self.router.clone(),
         }
     }
 }
@@ -211,6 +251,8 @@ impl Clone for RpcClient {
 pub struct RpcCallBuilder<Resp> {
     client: RpcClient,
     route: String,
+    /// Optional specific peer to call (None = use route resolution)
+    peer_id: Option<String>,
     payload: Vec<u8>,
     max_attempts: Option<u32>,
     timeout_per_attempt: Option<Duration>,
@@ -224,10 +266,11 @@ impl<Resp> RpcCallBuilder<Resp>
 where
     Resp: DeserializeOwned,
 {
-    fn new(client: RpcClient, route: String, payload: Vec<u8>) -> Self {
+    fn new(client: RpcClient, route: String, peer_id: Option<String>, payload: Vec<u8>) -> Self {
         Self {
             client,
             route,
+            peer_id,
             payload,
             max_attempts: None,
             timeout_per_attempt: None,
@@ -269,31 +312,32 @@ where
         Box::pin(async move {
             // TODO: Implement actual RPC call logic
             //
-            // Pseudocode for when runtime is implemented:
+            // Pseudocode for when transport is implemented:
             //
-            // 1. Lookup route in address book
-            //    let nodes = address_book.get_nodes_for_route(&self.route)?;
+            // 1. Resolve target using Router
+            //    let target = match &self.peer_id {
+            //        Some(peer_id) => self.client.router.resolve_peer(peer_id).await?,
+            //        None => self.client.router.resolve_route(&self.route).await?,
+            //    };
             //
-            // 2. Round-robin node selection
-            //    let node_idx = self.client.rr_state
-            //        .entry(self.route.clone())
-            //        .or_insert(AtomicUsize::new(0))
-            //        .fetch_add(1, Ordering::Relaxed) % nodes.len();
-            //    let target_node = &nodes[node_idx];
-            //
-            // 3. Build RPC frame (efficient manual framing)
+            // 2. Build RPC frame (efficient manual framing)
             //    let header = RpcHeader {
             //        request_id: Uuid::new_v4(),
             //        route: self.route.clone(),
             //    };
             //    let frame = pack_frame(&header, &self.payload)?;
             //
-            // 4. Connect and send
-            //    let channel = Channel::connect(target_node.address).await?;
-            //    channel.send_raw(&frame).await?;
+            // 3. Connect using resolved target
+            //    let channel = match target.transport.as_str() {
+            //        "tcp" => TcpTransport::connect(&target.address).await?,
+            //        _ => return Err(Error::NoCompatibleTransport(target.transport)),
+            //    };
+            //
+            // 4. Send request
+            //    channel.send(&frame).await?;
             //
             // 5. Receive and parse response
-            //    let response_frame = channel.recv_raw().await?;
+            //    let response_frame = channel.receive().await?;
             //    let (response_header, response_payload) = parse_frame(&response_frame)?;
             //
             // 6. Deserialize response
@@ -303,7 +347,7 @@ where
             //
             // 7. Apply retry logic based on self.max_attempts, timeout_per_attempt, etc.
 
-            // For now, return an error since runtime isn't implemented yet
+            // For now, return an error since transport isn't implemented yet
             Err(crate::Error::Custom(
                 "RPC runtime not yet implemented".to_string()
             ))
