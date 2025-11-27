@@ -163,8 +163,12 @@ pub struct RpcClient {
 }
 
 impl RpcClient {
-    /// Create a new RpcClient (internal use only)
-    pub(crate) fn new(router: crate::router::Router) -> Self {
+    /// Create a new RpcClient with a Router
+    ///
+    /// Typically you don't need to call this directly - `RpcClient` is
+    /// auto-registered as `Data<RpcClient>` when building a Node.
+    /// This is useful for testing or custom scenarios.
+    pub fn new(router: crate::router::Router) -> Self {
         Self { router }
     }
 
@@ -310,47 +314,57 @@ where
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
-            // TODO: Implement actual RPC call logic
-            //
-            // Pseudocode for when transport is implemented:
-            //
             // 1. Resolve target using Router
-            //    let target = match &self.peer_id {
-            //        Some(peer_id) => self.client.router.resolve_peer(peer_id).await?,
-            //        None => self.client.router.resolve_route(&self.route).await?,
-            //    };
-            //
-            // 2. Build RPC frame (efficient manual framing)
-            //    let header = RpcHeader {
-            //        request_id: Uuid::new_v4(),
-            //        route: self.route.clone(),
-            //    };
-            //    let frame = pack_frame(&header, &self.payload)?;
-            //
-            // 3. Connect using resolved target
-            //    let channel = match target.transport.as_str() {
-            //        "tcp" => TcpTransport::connect(&target.address).await?,
-            //        _ => return Err(Error::NoCompatibleTransport(target.transport)),
-            //    };
-            //
-            // 4. Send request
-            //    channel.send(&frame).await?;
-            //
-            // 5. Receive and parse response
-            //    let response_frame = channel.receive().await?;
-            //    let (response_header, response_payload) = parse_frame(&response_frame)?;
-            //
-            // 6. Deserialize response
-            //    let codec = BincodeCodec;
-            //    let response: Resp = codec.decode(response_payload)?;
-            //    Ok(response)
-            //
-            // 7. Apply retry logic based on self.max_attempts, timeout_per_attempt, etc.
+            let target = match &self.peer_id {
+                Some(peer_id) => self.client.router.resolve_peer(peer_id).await?,
+                None => self.client.router.resolve_route(&self.route).await?,
+            };
 
-            // For now, return an error since transport isn't implemented yet
-            Err(crate::Error::Custom(
-                "RPC runtime not yet implemented".to_string()
-            ))
+            // 2. Connect to target
+            // TODO: Dynamic transport selection based on target.transport
+            // For now, we only support TCP
+            let addr: std::net::SocketAddr = target
+                .address
+                .parse()
+                .map_err(|e| crate::Error::Custom(format!("Invalid address '{}': {}", target.address, e)))?;
+
+            let mut transport = constellation_fabric::transport::TcpTransport::connect(addr).await?;
+
+            // 3. Build and send RPC frame
+            let header = RpcHeader {
+                request_id: Uuid::new_v4(),
+                route: self.route.clone(),
+            };
+            let frame = pack_frame(&header, &self.payload)?;
+
+            use constellation_fabric::transport::Transport;
+            transport.send(&frame).await?;
+
+            // 4. Receive response
+            let response_frame = transport.receive().await?;
+
+            // 5. Parse response frame (header + payload)
+            let (_response_header, response_payload) = parse_frame(&response_frame)?;
+
+            // 6. Deserialize RpcResponse from payload
+            let codec = constellation_fabric::codec::BincodeCodec;
+            let response: RpcResponse = constellation_fabric::codec::Codec::decode(&codec, response_payload)
+                .map_err(|e| crate::Error::Serialization(e.to_string()))?;
+
+            // 6. Handle response result
+            match response.result {
+                ResponseResult::Success(payload) => {
+                    let result: Resp = constellation_fabric::codec::Codec::decode(&codec, &payload)
+                        .map_err(|e| crate::Error::Serialization(e.to_string()))?;
+                    Ok(result)
+                }
+                ResponseResult::Error { category, payload } => {
+                    // Try to deserialize error message, fall back to raw bytes description
+                    let error_msg: String = constellation_fabric::codec::Codec::decode(&codec, &payload)
+                        .unwrap_or_else(|_| format!("RPC error (category: {:?})", category));
+                    Err(crate::Error::Rpc(error_msg))
+                }
+            }
         })
     }
 }

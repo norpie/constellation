@@ -37,6 +37,12 @@ pub enum Error {
 
     #[error("Cron scheduling not yet implemented")]
     CronNotImplemented,
+
+    #[error("Routing error: {0}")]
+    Routing(String),
+
+    #[error("RPC error: {0}")]
+    Rpc(String),
 }
 
 impl From<std::io::Error> for Error {
@@ -57,6 +63,12 @@ impl From<constellation_raft::Error> for Error {
     }
 }
 
+impl From<crate::router::RoutingError> for Error {
+    fn from(e: crate::router::RoutingError) -> Self {
+        Error::Routing(e.to_string())
+    }
+}
+
 impl crate::rpc::ErrorResponder for Error {
     fn error_category(&self) -> crate::rpc::ErrorCategory {
         match self {
@@ -73,7 +85,9 @@ impl crate::rpc::ErrorResponder for Error {
             | Error::Custom(_)
             | Error::Scheduler(_)
             | Error::TaskNotFound(_)
-            | Error::CronNotImplemented => crate::rpc::ErrorCategory::ServerError,
+            | Error::CronNotImplemented
+            | Error::Routing(_)
+            | Error::Rpc(_) => crate::rpc::ErrorCategory::ServerError,
         }
     }
 }
