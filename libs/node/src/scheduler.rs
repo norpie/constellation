@@ -402,6 +402,40 @@ impl Scheduler {
         }
         response_rx.await.ok().flatten()
     }
+
+    /// Get a handle for a task by ID
+    ///
+    /// This creates a new `TaskHandle` that can be used to cancel or reset the task.
+    /// Note: This does not verify the task exists - use `get()` first if you need to check.
+    pub fn handle_for(&self, id: TaskId) -> TaskHandle {
+        TaskHandle {
+            id,
+            command_tx: self.command_tx.clone(),
+        }
+    }
+
+    /// Get a handle for a named task
+    ///
+    /// Looks up a task by name and returns a handle that can be used to cancel or reset it.
+    /// Returns `None` if no task with that name exists.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Schedule a named task
+    /// scheduler.schedule_named("election_timeout", schedule, task).await?;
+    ///
+    /// // Later, get a handle to reset it
+    /// if let Some(handle) = scheduler.handle_by_name("election_timeout").await {
+    ///     handle.reset_now();
+    /// }
+    /// ```
+    pub async fn handle_by_name(&self, name: &str) -> Option<TaskHandle> {
+        let tasks = self.list().await;
+        tasks
+            .iter()
+            .find(|t| t.name.as_deref() == Some(name))
+            .map(|t| self.handle_for(t.id))
+    }
 }
 
 // ============================================================================
