@@ -2,7 +2,9 @@
 
 use constellation_fabric::codec::{BincodeCodec, Codec};
 use constellation_fabric::transport::{TcpTransport, TcpTransportListener, Transport};
-use constellation_node::{handler, Node};
+use constellation_node::mesh::{AddressBook, AddressBookCommand, AddressGroup, Capabilities, TransponderData};
+use constellation_node::{handler, Node, RpcClient};
+use constellation_raft::StateMachine;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use uuid::Uuid;
@@ -190,4 +192,139 @@ async fn test_error_response() {
             assert_eq!(error.0, "Intentional test failure");
         }
     }
+}
+
+/// Test RPC calls using RpcClient (full end-to-end with routing)
+#[tokio::test]
+async fn test_rpc_client_end_to_end() {
+    // Setup server listener
+    let listener = TcpTransportListener::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Build and start server node
+    let server_node = Node::builder()
+        .service_name("MathService")
+        .id("server-node")
+        .auto_discover(false)
+        .register("add.v1", &ADD_HANDLER)
+        .listen(listener, "test")
+        .build()
+        .unwrap();
+
+    // Spawn server in background
+    tokio::spawn(async move {
+        let _ = server_node.start().await;
+    });
+
+    // Give server time to start
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Build client node with server in address book
+    let mut address_book = AddressBook::new();
+
+    // Add server to address book
+    let server_data = TransponderData::builder()
+        .node_id("server-node")
+        .transport("tcp")
+        .codec("bincode")
+        .route("MathService.add.v1")
+        .address(AddressGroup::single("default", "tcp", &addr.to_string()))
+        .capabilities(Capabilities::basic())
+        .build();
+
+    address_book
+        .apply(AddressBookCommand::Join(server_data))
+        .await
+        .unwrap();
+
+    // Create client's raft with populated address book
+    let client_raft = constellation_raft::RaftNode::builder()
+        .node_id("client-node".to_string())
+        .storage(constellation_raft::MemoryStorage::new())
+        .state_machine(address_book)
+        .build()
+        .unwrap();
+
+    // Create router and rpc client manually for this test
+    let router = constellation_node::Router::new("client-node".to_string(), client_raft);
+    let rpc = RpcClient::new(router);
+
+    // Make RPC call using RpcClient
+    let request = AddRequest { a: 10, b: 20 };
+    let response: AddResponse = rpc
+        .call("MathService.add.v1", &request)
+        .expect("Serialization should succeed")
+        .await
+        .expect("RPC call should succeed");
+
+    // Verify response
+    assert_eq!(response.result, 30);
+}
+
+/// Test RPC call to specific peer using call_peer
+#[tokio::test]
+async fn test_rpc_client_call_peer() {
+    // Setup server listener
+    let listener = TcpTransportListener::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Build and start server node
+    let server_node = Node::builder()
+        .service_name("MathService")
+        .id("server-node")
+        .auto_discover(false)
+        .register("add.v1", &ADD_HANDLER)
+        .listen(listener, "test")
+        .build()
+        .unwrap();
+
+    // Spawn server in background
+    tokio::spawn(async move {
+        let _ = server_node.start().await;
+    });
+
+    // Give server time to start
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Build client with server in address book
+    let mut address_book = AddressBook::new();
+
+    let server_data = TransponderData::builder()
+        .node_id("server-node")
+        .transport("tcp")
+        .codec("bincode")
+        .route("MathService.add.v1")
+        .address(AddressGroup::single("default", "tcp", &addr.to_string()))
+        .capabilities(Capabilities::basic())
+        .build();
+
+    address_book
+        .apply(AddressBookCommand::Join(server_data))
+        .await
+        .unwrap();
+
+    let client_raft = constellation_raft::RaftNode::builder()
+        .node_id("client-node".to_string())
+        .storage(constellation_raft::MemoryStorage::new())
+        .state_machine(address_book)
+        .build()
+        .unwrap();
+
+    let router = constellation_node::Router::new("client-node".to_string(), client_raft);
+    let rpc = RpcClient::new(router);
+
+    // Make RPC call directly to peer
+    let request = AddRequest { a: 7, b: 8 };
+    let response: AddResponse = rpc
+        .call_peer("server-node", "MathService.add.v1", &request)
+        .expect("Serialization should succeed")
+        .await
+        .expect("RPC call should succeed");
+
+    // Verify response
+    assert_eq!(response.result, 15);
 }

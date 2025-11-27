@@ -176,15 +176,20 @@ async fn test_rpc_client_auto_registered() {
         .extract()
         .expect("RpcClient should be auto-registered");
 
-    // Verify we can create a call (even though it won't succeed yet)
+    // Verify we can create a call (will fail because no peer handles this route)
     let result = rpc
         .call::<(), ()>("SomeService.method.v1", &())
         .expect("Serialization should succeed")
         .await;
 
-    // Should fail with "not implemented" error since runtime isn't ready
+    // Should fail with routing error since no peer handles this route
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("not yet implemented"));
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("Route not found") || err.contains("Routing"),
+        "Expected routing error, got: {}",
+        err
+    );
 }
 
 #[tokio::test]
