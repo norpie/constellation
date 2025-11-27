@@ -5,6 +5,7 @@
 
 use crate::node::Data;
 use chrono::{DateTime, Utc};
+use rand::Rng;
 use std::any::{Any, TypeId};
 use std::collections::{BinaryHeap, HashMap};
 use std::future::Future;
@@ -34,6 +35,14 @@ pub enum Schedule {
         initial_delay: Option<Duration>,
     },
 
+    /// Run repeatedly with randomized intervals (useful for Raft election timeout)
+    ///
+    /// Each execution is scheduled after a random duration between `min` and `max`.
+    RandomInterval {
+        min: Duration,
+        max: Duration,
+    },
+
     /// Run according to a cron expression (not yet implemented)
     Cron(String),
 }
@@ -53,6 +62,13 @@ impl Schedule {
             period,
             initial_delay: Some(initial_delay),
         }
+    }
+
+    /// Create a randomized interval schedule (useful for Raft election timeout)
+    ///
+    /// Each execution is scheduled after a random duration between `min` and `max`.
+    pub fn random_interval(min: Duration, max: Duration) -> Self {
+        Schedule::RandomInterval { min, max }
     }
 
     /// Create a one-shot schedule to run after a delay
@@ -151,6 +167,41 @@ impl TaskHandle {
         let _ = self.command_tx.try_send(SchedulerCommand::Cancel {
             id: self.id,
             response: None,
+        });
+    }
+
+    /// Reset the task's timer, recomputing the next run time from now
+    ///
+    /// This is useful for Raft election timeout - when a heartbeat is received,
+    /// the election timer should be reset. For `RandomInterval` schedules, this
+    /// will pick a new random delay.
+    ///
+    /// Returns `true` if the task was found and reset, `false` otherwise.
+    pub async fn reset(&self) -> bool {
+        let (response_tx, response_rx) = oneshot::channel();
+        if self
+            .command_tx
+            .send(SchedulerCommand::Reset {
+                id: self.id,
+                response: response_tx,
+            })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        response_rx.await.unwrap_or(false)
+    }
+
+    /// Reset the task's timer without waiting for confirmation (fire-and-forget)
+    ///
+    /// This is useful when you need to reset quickly without blocking,
+    /// such as in a hot path when receiving heartbeats.
+    pub fn reset_now(&self) {
+        let (response_tx, _response_rx) = oneshot::channel();
+        let _ = self.command_tx.try_send(SchedulerCommand::Reset {
+            id: self.id,
+            response: response_tx,
         });
     }
 }
@@ -385,6 +436,10 @@ pub(crate) enum SchedulerCommand {
         id: TaskId,
         response: Option<oneshot::Sender<bool>>,
     },
+    Reset {
+        id: TaskId,
+        response: oneshot::Sender<bool>,
+    },
     List {
         response: oneshot::Sender<Vec<TaskInfo>>,
     },
@@ -410,6 +465,8 @@ struct TaskState {
     next_run: Option<Instant>,
     skipped_count: u64,
     cancelled: bool,
+    /// Generation counter - incremented on reset to invalidate old pending entries
+    generation: u64,
 }
 
 impl TaskState {
@@ -443,6 +500,8 @@ impl TaskState {
 struct PendingTask {
     id: TaskId,
     next_run: Instant,
+    /// Generation at the time this entry was created - used to invalidate stale entries on reset
+    generation: u64,
 }
 
 impl Ord for PendingTask {
@@ -546,10 +605,11 @@ fn handle_command(
                 next_run,
                 skipped_count: 0,
                 cancelled: false,
+                generation: 0,
             };
 
             if let Some(next) = next_run {
-                pending.push(PendingTask { id, next_run: next });
+                pending.push(PendingTask { id, next_run: next, generation: 0 });
             }
 
             tasks.insert(id, task_state);
@@ -572,6 +632,27 @@ fn handle_command(
             if let Some(response) = response {
                 let _ = response.send(found);
             }
+        }
+
+        SchedulerCommand::Reset { id, response } => {
+            let found = if let Some(task) = tasks.get_mut(&id) {
+                if !task.cancelled {
+                    // Increment generation to invalidate any existing pending entries
+                    task.generation += 1;
+                    // Recompute next run from now (for RandomInterval this picks a new random delay)
+                    let next = compute_next_run(&task.schedule, None);
+                    task.next_run = next;
+                    if let Some(next_run) = next {
+                        pending.push(PendingTask { id, next_run, generation: task.generation });
+                    }
+                    true
+                } else {
+                    false // Can't reset a cancelled task
+                }
+            } else {
+                false
+            };
+            let _ = response.send(found);
         }
 
         SchedulerCommand::List { response } => {
@@ -602,12 +683,12 @@ fn handle_command(
                 task.last_duration = Some(duration);
 
                 // For non-interval tasks (one-shot), compute and schedule next run
-                // Interval tasks are scheduled immediately when spawned in run_due_tasks
+                // Interval/RandomInterval tasks are scheduled immediately when spawned in run_due_tasks
                 if !task.cancelled {
-                    if !matches!(task.schedule, Schedule::Interval { .. }) {
+                    if !matches!(task.schedule, Schedule::Interval { .. } | Schedule::RandomInterval { .. }) {
                         task.next_run = compute_next_run(&task.schedule, task.last_run);
                         if let Some(next) = task.next_run {
-                            pending.push(PendingTask { id, next_run: next });
+                            pending.push(PendingTask { id, next_run: next, generation: task.generation });
                         }
                     }
                 }
@@ -642,7 +723,13 @@ fn run_due_tasks(
             continue;
         }
 
+        // Check if this pending entry is stale (from before a reset)
+        if pending_task.generation != task_state.generation {
+            continue;
+        }
+
         // Check overlap policy
+        let generation = task_state.generation;
         if running.contains_key(&id) {
             match task_state.overlap_policy {
                 OverlapPolicy::Skip => {
@@ -650,7 +737,7 @@ fn run_due_tasks(
                     // Re-schedule for next interval
                     if let Some(next) = compute_next_run(&task_state.schedule, Some(now)) {
                         task_state.next_run = Some(next);
-                        pending.push(PendingTask { id, next_run: next });
+                        pending.push(PendingTask { id, next_run: next, generation });
                     }
                     continue;
                 }
@@ -663,12 +750,21 @@ fn run_due_tasks(
         // Increment running count
         *running.entry(id).or_insert(0) += 1;
 
-        // For interval tasks, immediately schedule next run so we can have concurrent
+        // For interval/random interval tasks, immediately schedule next run so we can have concurrent
         // executions (for Allow policy) or detect overlap (for Skip policy)
-        if let Schedule::Interval { period, .. } = &task_state.schedule {
-            let next = now + *period;
-            task_state.next_run = Some(next);
-            pending.push(PendingTask { id, next_run: next });
+        match &task_state.schedule {
+            Schedule::Interval { period, .. } => {
+                let next = now + *period;
+                task_state.next_run = Some(next);
+                pending.push(PendingTask { id, next_run: next, generation });
+            }
+            Schedule::RandomInterval { min, max } => {
+                let delay = random_duration(*min, *max);
+                let next = now + delay;
+                task_state.next_run = Some(next);
+                pending.push(PendingTask { id, next_run: next, generation });
+            }
+            _ => {}
         }
 
         let ctx = TaskContext {
@@ -728,8 +824,22 @@ fn compute_next_run(schedule: &Schedule, last_run: Option<Instant>) -> Option<In
             }
             Some(last) => Some(last + *period),
         },
+        Schedule::RandomInterval { min, max } => {
+            // Always compute from now with a random delay between min and max
+            let delay = random_duration(*min, *max);
+            Some(now + delay)
+        }
         Schedule::Cron(_) => None, // Not implemented
     }
+}
+
+/// Generate a random duration between min and max (inclusive)
+fn random_duration(min: Duration, max: Duration) -> Duration {
+    let mut rng = rand::rng();
+    let min_nanos = min.as_nanos() as u64;
+    let max_nanos = max.as_nanos() as u64;
+    let random_nanos = rng.random_range(min_nanos..=max_nanos);
+    Duration::from_nanos(random_nanos)
 }
 
 // ============================================================================
