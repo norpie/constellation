@@ -288,6 +288,13 @@ impl Scheduler {
         (Self { command_tx }, command_rx)
     }
 
+    /// Create a Scheduler from an existing command sender
+    ///
+    /// This is useful when you need a Scheduler handle but only have the sender.
+    pub(crate) fn from_sender(command_tx: mpsc::Sender<SchedulerCommand>) -> Self {
+        Self { command_tx }
+    }
+
     /// Get the command sender (for creating TaskHandles)
     pub(crate) fn command_tx(&self) -> mpsc::Sender<SchedulerCommand> {
         self.command_tx.clone()
