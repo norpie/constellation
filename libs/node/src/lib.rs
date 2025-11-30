@@ -2,6 +2,7 @@ pub mod codec;
 pub mod error;
 pub mod handler;
 pub mod mesh;
+pub mod raft_tasks;
 pub mod router;
 pub mod rpc;
 pub mod scheduler;

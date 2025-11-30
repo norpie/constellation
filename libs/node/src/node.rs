@@ -173,6 +173,12 @@ impl Node {
                     })
                     .await;
             }
+
+            // Schedule Raft background tasks (election timeout + heartbeat)
+            let scheduler = Scheduler::from_sender(scheduler_tx.clone());
+            if let Err(e) = crate::raft_tasks::schedule_raft_tasks(&scheduler).await {
+                eprintln!("Warning: Failed to schedule Raft tasks: {}", e);
+            }
         }
 
         // Wait for shutdown signal
