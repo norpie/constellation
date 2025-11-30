@@ -4,6 +4,17 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// Result of handling a RequestVote response
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElectionResult {
+    /// Still waiting for more votes
+    StillVoting,
+    /// Won the election - became leader
+    Won,
+    /// Lost the election - saw higher term, converted to follower
+    Lost(Term),
+}
+
 /// A Raft consensus node
 ///
 /// This is the main entry point for the Raft algorithm. It manages elections,
@@ -150,11 +161,19 @@ impl<SM: StateMachine> RaftNode<SM> {
         Ok(())
     }
 
-    /// Convert to candidate state and start election
+    /// Start an election
     ///
-    /// This is called when election timeout elapses and can_lead is true.
-    async fn convert_to_candidate(&self) -> Result<()> {
+    /// Increments the term, votes for self, and transitions to candidate state.
+    /// This should be called when the election timeout fires and this node can lead.
+    ///
+    /// Returns an error if `can_lead` is false.
+    pub async fn start_election(&self) -> Result<()> {
         let mut inner = self.inner.write().await;
+
+        // Check if this node can become a leader
+        if !inner.can_lead {
+            return Err(Error::Internal("This node cannot lead".to_string()));
+        }
 
         // Increment term
         let new_term = inner.storage.get_term().await? + 1;
@@ -167,6 +186,227 @@ impl<SM: StateMachine> RaftNode<SM> {
         inner.state = State::Candidate;
         inner.votes_received.clear();
         inner.votes_received.insert(node_id);
+
+        Ok(())
+    }
+
+    /// Prepare a RequestVote RPC for sending to peers
+    ///
+    /// This should be called after `start_election()` to get the request
+    /// that should be sent to all peers.
+    pub async fn prepare_request_vote(&self) -> Result<crate::RequestVoteRequest> {
+        let inner = self.inner.read().await;
+
+        let term = inner.storage.get_term().await?;
+        let last_log_index = inner.storage.last_log_index().await?;
+        let last_log_term = inner.storage.last_log_term().await?;
+
+        Ok(crate::RequestVoteRequest {
+            term,
+            candidate_id: inner.node_id.clone(),
+            last_log_index,
+            last_log_term,
+        })
+    }
+
+    /// Handle a response to a RequestVote RPC
+    ///
+    /// Processes the vote response and returns the election result.
+    /// If we receive a majority of votes, converts to leader state.
+    /// If we see a higher term, converts to follower state.
+    pub async fn handle_request_vote_response(
+        &self,
+        _from: &str,
+        response: crate::RequestVoteResponse,
+    ) -> Result<ElectionResult> {
+        let mut inner = self.inner.write().await;
+
+        // If we're no longer a candidate, ignore the response
+        if inner.state != State::Candidate {
+            return Ok(ElectionResult::StillVoting);
+        }
+
+        let current_term = inner.storage.get_term().await?;
+
+        // If response has higher term, convert to follower
+        if response.term > current_term {
+            inner.storage.save_term(response.term).await?;
+            inner.storage.save_voted_for(None).await?;
+            inner.state = State::Follower;
+            inner.current_leader = None;
+            inner.votes_received.clear();
+            return Ok(ElectionResult::Lost(response.term));
+        }
+
+        // Count the vote if granted
+        if response.vote_granted {
+            inner.votes_received.insert(_from.to_string());
+
+            let cluster_size = inner.peers.len() + 1;
+            let majority = Self::calculate_majority(cluster_size);
+
+            if inner.votes_received.len() >= majority {
+                // Won! Convert to leader
+                inner.state = State::Leader;
+                inner.current_leader = Some(inner.node_id.clone());
+
+                // Initialize leader volatile state
+                let last_log_index = inner.storage.last_log_index().await?;
+                inner.next_index.clear();
+                inner.match_index.clear();
+
+                let peers = inner.peers.clone();
+                for peer in peers {
+                    inner.next_index.insert(peer.clone(), last_log_index + 1);
+                    inner.match_index.insert(peer, 0);
+                }
+
+                return Ok(ElectionResult::Won);
+            }
+        }
+
+        Ok(ElectionResult::StillVoting)
+    }
+
+    /// Prepare an AppendEntries RPC for a specific peer
+    ///
+    /// This is used for both heartbeats (empty entries) and log replication.
+    /// If there are no new entries to send, an empty entries vec is used (heartbeat).
+    pub async fn prepare_append_entries(
+        &self,
+        peer_id: &str,
+    ) -> Result<crate::AppendEntriesRequest> {
+        let inner = self.inner.read().await;
+
+        // Get current term and node_id
+        let term = inner.storage.get_term().await?;
+        let leader_id = inner.node_id.clone();
+
+        // Get next_index for this peer (default to 1 if not found)
+        let next_index = inner.next_index.get(peer_id).copied().unwrap_or(1);
+
+        // prev_log_index is the index before next_index
+        let prev_log_index = if next_index > 0 { next_index - 1 } else { 0 };
+
+        // Get prev_log_term
+        let prev_log_term = if prev_log_index > 0 {
+            inner
+                .storage
+                .get_entry(prev_log_index)
+                .await?
+                .map(|e| e.term)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        // Get entries to send (from next_index to end of log)
+        let last_log_index = inner.storage.last_log_index().await?;
+        let entries = if next_index <= last_log_index {
+            let mut entries = Vec::new();
+            for i in next_index..=last_log_index {
+                if let Some(entry) = inner.storage.get_entry(i).await? {
+                    entries.push(entry);
+                }
+            }
+            entries
+        } else {
+            Vec::new() // Heartbeat - no new entries
+        };
+
+        Ok(crate::AppendEntriesRequest {
+            term,
+            leader_id,
+            prev_log_index,
+            prev_log_term,
+            entries,
+            leader_commit: inner.commit_index,
+        })
+    }
+
+    /// Handle a response to an AppendEntries RPC
+    ///
+    /// Updates next_index and match_index for the peer based on the response.
+    /// If the response indicates a higher term, converts to follower.
+    pub async fn handle_append_entries_response(
+        &self,
+        from: &str,
+        response: crate::AppendEntriesResponse,
+    ) -> Result<()> {
+        let mut inner = self.inner.write().await;
+
+        let current_term = inner.storage.get_term().await?;
+
+        // If response has higher term, convert to follower
+        if response.term > current_term {
+            inner.storage.save_term(response.term).await?;
+            inner.storage.save_voted_for(None).await?;
+            inner.state = State::Follower;
+            inner.current_leader = None;
+            inner.votes_received.clear();
+            return Ok(());
+        }
+
+        // If we're no longer leader, ignore
+        if inner.state != State::Leader {
+            return Ok(());
+        }
+
+        if response.success {
+            // Update next_index and match_index for this peer
+            // match_index = prev_log_index + len(entries sent)
+            // We don't have the original request, so we use last_log_index as approximation
+            let last_log_index = inner.storage.last_log_index().await?;
+            inner.match_index.insert(from.to_string(), last_log_index);
+            inner.next_index.insert(from.to_string(), last_log_index + 1);
+
+            // Advance commit_index if possible (Raft paper §5.3, §5.4)
+            // Find the highest N where: N > commit_index, majority have match_index >= N,
+            // and log[N].term == current_term
+            let current_term = inner.storage.get_term().await?;
+            for n in (inner.commit_index + 1..=last_log_index).rev() {
+                // Check if entry at N has current term (leader can only commit from current term)
+                let entry_term = inner
+                    .storage
+                    .get_entry(n)
+                    .await?
+                    .map(|e| e.term)
+                    .unwrap_or(0);
+
+                if entry_term != current_term {
+                    continue;
+                }
+
+                // Count replicas with match_index >= N (including self)
+                let mut replica_count = 1; // Leader has it
+                for match_idx in inner.match_index.values() {
+                    if *match_idx >= n {
+                        replica_count += 1;
+                    }
+                }
+
+                let cluster_size = inner.peers.len() + 1;
+                if replica_count >= Self::calculate_majority(cluster_size) {
+                    inner.commit_index = n;
+                    break;
+                }
+            }
+        } else {
+            // AppendEntries failed - decrement next_index and retry
+            // Use conflict info if available for faster backtracking
+            let current_next = inner.next_index.get(from).copied().unwrap_or(1);
+
+            let new_next = if let Some(conflict_index) = response.conflict_index {
+                // Jump directly to conflict point
+                conflict_index
+            } else if current_next > 1 {
+                current_next - 1
+            } else {
+                1
+            };
+
+            inner.next_index.insert(from.to_string(), new_next);
+        }
 
         Ok(())
     }
@@ -671,7 +911,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_convert_to_candidate() {
+    async fn test_start_election() {
         let node = RaftNode::builder()
             .node_id("node-1")
             .peers(vec!["node-2".to_string(), "node-3".to_string()])
@@ -679,16 +919,30 @@ mod tests {
             .build()
             .unwrap();
 
-        // Convert to candidate
-        node.convert_to_candidate().await.unwrap();
+        // Start election
+        node.start_election().await.unwrap();
 
         assert_eq!(node.state().await, State::Candidate);
         assert_eq!(node.current_term().await.unwrap(), 1); // Incremented from 0
-        assert!(node.has_majority_votes().await == false); // Only voted for self (1/3)
+        assert!(!node.has_majority_votes().await); // Only voted for self (1/3)
     }
 
     #[tokio::test]
-    async fn test_convert_to_leader() {
+    async fn test_start_election_not_can_lead() {
+        let node = RaftNode::builder()
+            .node_id("node-1")
+            .can_lead(false)
+            .state_machine(TestStateMachine)
+            .build()
+            .unwrap();
+
+        // Should fail because can_lead is false
+        let result = node.start_election().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_election_win() {
         let node = RaftNode::builder()
             .node_id("node-1")
             .peers(vec!["node-2".to_string(), "node-3".to_string()])
@@ -696,12 +950,22 @@ mod tests {
             .build()
             .unwrap();
 
-        // First become candidate
-        node.convert_to_candidate().await.unwrap();
+        // Start election
+        node.start_election().await.unwrap();
+        assert_eq!(node.state().await, State::Candidate);
 
-        // Then become leader
-        node.convert_to_leader().await.unwrap();
+        // Receive vote from node-2
+        let response = crate::RequestVoteResponse {
+            term: 1,
+            vote_granted: true,
+        };
+        let result = node
+            .handle_request_vote_response("node-2", response)
+            .await
+            .unwrap();
 
+        // Should win with 2/3 votes (self + node-2)
+        assert_eq!(result, ElectionResult::Won);
         assert_eq!(node.state().await, State::Leader);
         assert!(node.is_leader().await);
         assert_eq!(node.current_leader().await, Some("node-1".to_string()));

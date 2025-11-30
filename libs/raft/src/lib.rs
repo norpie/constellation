@@ -13,7 +13,7 @@ mod storage;
 
 pub use error::{Error, Result};
 pub use log::{LogEntry, LogIndex, Term};
-pub use node::{RaftNode, RaftNodeBuilder};
+pub use node::{ElectionResult, RaftNode, RaftNodeBuilder};
 pub use rpc::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
     RequestVoteRequest, RequestVoteResponse,
