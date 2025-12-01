@@ -16,7 +16,7 @@ pub use constellation_node_derive::handler;
 
 // Re-export commonly used types
 pub use codec::{BincodeFactory, CodecFactory, RawCodecFactory, TypedCodec};
-pub use config::Config;
+pub use config::{get_json_path, set_json_path, Config, PathError};
 pub use error::{Error, Result};
 pub use node::{Data, Node, NodeBuilder, StartableNode};
 pub use rpc::{
