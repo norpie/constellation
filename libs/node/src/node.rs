@@ -262,18 +262,25 @@ impl StartableNode {
 
 /// Handle a single connection - receive requests, dispatch to handlers, send responses
 async fn handle_connection(mut transport: Box<dyn Transport>, node: Arc<Node>) -> Result<()> {
+    println!("[handle_connection] New connection on node {}", node.node_id);
     loop {
         // Receive frame from transport
         let frame = transport.receive().await?;
+        println!("[handle_connection] Received frame ({} bytes)", frame.len());
 
         // Parse RPC frame (our custom format with separate header/payload)
         let (header, payload) = crate::rpc::parse_frame(&frame)?;
+        println!("[handle_connection] Route: {}", header.route);
 
         // Lookup handler for this route
         let handler = node
             .routes
             .get(&header.route)
-            .ok_or_else(|| Error::RouteNotFound(header.route.clone()))?;
+            .ok_or_else(|| {
+                println!("[handle_connection] Route not found: {}", header.route);
+                println!("[handle_connection] Available routes: {:?}", node.routes.keys().collect::<Vec<_>>());
+                Error::RouteNotFound(header.route.clone())
+            })?;
 
         // Build RpcRequest for handler
         let request = crate::rpc::RpcRequest {
@@ -780,8 +787,11 @@ async fn bootstrap_join(
     raft: &constellation_raft::RaftNode<crate::mesh::AddressBook>,
     can_lead: bool,
 ) -> Result<()> {
+    println!("[bootstrap_join] Node {} starting bootstrap (peers: {})", self_data.node_id, bootstrap_peers.len());
+
     // If no bootstrap peers, we're forming a new cluster
     if bootstrap_peers.is_empty() {
+        println!("[bootstrap_join] No bootstrap peers - forming new cluster");
         if !can_lead {
             return Err(Error::Custom(
                 "Cannot start: no bootstrap peers and can_lead=false".to_string(),
@@ -791,46 +801,56 @@ async fn bootstrap_join(
         // We bypass the Raft log since there's no one to replicate to anyway.
         let command = crate::mesh::AddressBookCommand::Join(self_data.clone());
         raft.apply_to_state_machine(command).await?;
+        println!("[bootstrap_join] First node added self to AddressBook");
         return Ok(());
     }
 
     // Try bootstrap peers sequentially
-    for (_peer_id, address_group) in bootstrap_peers {
+    for (peer_id, address_group) in bootstrap_peers {
         // Get first address from group
         let Some(address) = address_group.addresses.first() else {
             continue;
         };
 
+        println!("[bootstrap_join] Trying to join via peer {} at {}", peer_id, address);
+
         // Attempt join
         match try_join(address, self_data).await {
-            Ok(crate::mesh::MeshResponse::Success) => return Ok(()),
+            Ok(crate::mesh::MeshResponse::Success) => {
+                println!("[bootstrap_join] Successfully joined via {}", address);
+                return Ok(());
+            }
             Ok(crate::mesh::MeshResponse::NotLeader {
                 leader: Some(leader_data),
             }) => {
+                println!("[bootstrap_join] Peer {} is not leader, redirecting to {:?}", address, leader_data.node_id);
                 // Got redirected to leader, try that
                 if let Some(leader_addr) = leader_data
                     .addresses
                     .first()
                     .and_then(|g| g.addresses.first())
                 {
+                    println!("[bootstrap_join] Trying leader at {}", leader_addr);
                     if let Ok(crate::mesh::MeshResponse::Success) =
                         try_join(leader_addr, self_data).await
                     {
+                        println!("[bootstrap_join] Successfully joined via leader");
                         return Ok(());
                     }
                 }
             }
             Ok(crate::mesh::MeshResponse::NotLeader { leader: None }) => {
-                // No leader known, try next bootstrap peer
+                println!("[bootstrap_join] Peer {} has no leader info, trying next", address);
                 continue;
             }
-            Err(_) => {
-                // Connection failed, try next bootstrap peer
+            Err(e) => {
+                println!("[bootstrap_join] Connection to {} failed: {}", address, e);
                 continue;
             }
         }
     }
 
+    println!("[bootstrap_join] Failed to join via any bootstrap peer");
     Err(Error::Custom(
         "Failed to join cluster via any bootstrap peer".to_string(),
     ))
@@ -840,5 +860,8 @@ async fn try_join(
     address: &str,
     self_data: &crate::mesh::TransponderData,
 ) -> Result<crate::mesh::MeshResponse> {
-    crate::rpc::send_direct(address, "_mesh.join", self_data).await
+    println!("[try_join] Sending _mesh.join to {}", address);
+    let result = crate::rpc::send_direct(address, "_mesh.join", self_data).await;
+    println!("[try_join] Result: {:?}", result.as_ref().map(|_| "ok").map_err(|e| e.to_string()));
+    result
 }

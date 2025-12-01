@@ -56,30 +56,39 @@ async fn mesh_join(
     req: TransponderData,
     raft: Data<RaftNode<AddressBook>>,
 ) -> Result<MeshResponse, crate::error::Error> {
+    println!("[_mesh.join] Received join request from node: {}", req.node_id);
+
     // Check if we're the leader
-    if !raft.is_leader().await {
+    let is_leader = raft.is_leader().await;
+    println!("[_mesh.join] Am I leader? {}", is_leader);
+
+    if !is_leader {
         // Get leader info from AddressBook if we know who it is
         let leader_id = raft.current_leader().await;
+        println!("[_mesh.join] Current leader: {:?}", leader_id);
         let leader_data = match leader_id {
             Some(id) => raft
                 .with_state_machine(|ab| ab.get_node(&id).cloned())
                 .await,
             None => None,
         };
+        println!("[_mesh.join] Returning NotLeader response");
         return Ok(MeshResponse::NotLeader { leader: leader_data });
     }
 
     // Serialize the Join command
-    let command = AddressBookCommand::Join(req);
+    let command = AddressBookCommand::Join(req.clone());
     let bytes = BincodeCodec
         .encode(&command)
         .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
 
     // Submit to Raft
+    println!("[_mesh.join] Submitting join command to Raft...");
     raft.submit_command(bytes)
         .await
         .map_err(crate::error::Error::from)?;
 
+    println!("[_mesh.join] Join successful for node: {}", req.node_id);
     Ok(MeshResponse::Success)
 }
 
