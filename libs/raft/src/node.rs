@@ -1,10 +1,7 @@
-use crate::{Error, LogIndex, RaftStorage, Result, State, StateMachine, Term};
+use crate::{Error, LogIndex, RaftConfig, RaftStorage, Result, State, StateMachine, Term};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
-/// Number of log entries after which to trigger snapshot creation
-const SNAPSHOT_THRESHOLD: u64 = 1000;
 
 /// Result of handling a RequestVote response
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +38,9 @@ struct RaftNodeInner<SM: StateMachine> {
     node_id: String,
     can_lead: bool,
     peers: Vec<String>,
+
+    // Configuration
+    snapshot_threshold: u64,
 
     // Storage and state machine
     storage: Box<dyn RaftStorage>,
@@ -897,8 +897,8 @@ impl<SM: StateMachine> RaftNode<SM> {
 
     /// Check if we should create a snapshot, and do so if needed
     ///
-    /// Creates a snapshot when the log has grown beyond SNAPSHOT_THRESHOLD
-    /// entries since the last snapshot.
+    /// Creates a snapshot when the log has grown beyond the configured
+    /// snapshot_threshold entries since the last snapshot.
     ///
     /// Only the leader triggers snapshots, but followers also compact
     /// their log when they receive InstallSnapshot.
@@ -915,7 +915,7 @@ impl<SM: StateMachine> RaftNode<SM> {
 
         // Check if we have enough new entries to warrant a snapshot
         let entries_since_snapshot = last_applied.saturating_sub(last_snapshot_index);
-        if entries_since_snapshot < SNAPSHOT_THRESHOLD {
+        if entries_since_snapshot < inner.snapshot_threshold {
             return Ok(());
         }
 
@@ -1012,6 +1012,7 @@ pub struct RaftNodeBuilder<SM: StateMachine> {
     peers: Vec<String>,
     storage: Option<Box<dyn RaftStorage>>,
     state_machine: Option<SM>,
+    config: RaftConfig,
 }
 
 impl<SM: StateMachine> Default for RaftNodeBuilder<SM> {
@@ -1029,7 +1030,14 @@ impl<SM: StateMachine> RaftNodeBuilder<SM> {
             peers: Vec::new(),
             storage: None,
             state_machine: None,
+            config: RaftConfig::default(),
         }
+    }
+
+    /// Set the Raft configuration
+    pub fn config(mut self, config: RaftConfig) -> Self {
+        self.config = config;
+        self
     }
 
     /// Set the node ID
@@ -1097,6 +1105,7 @@ impl<SM: StateMachine> RaftNodeBuilder<SM> {
             node_id,
             can_lead: self.can_lead,
             peers: self.peers,
+            snapshot_threshold: self.config.snapshot_threshold,
             storage,
             state_machine,
             state: State::Follower,

@@ -263,7 +263,11 @@ impl StartableNode {
 
         // 4. NOW schedule Raft tasks (we're part of a cluster)
         let scheduler = Scheduler::from_sender(scheduler_tx.clone());
-        if let Err(e) = crate::raft_tasks::schedule_raft_tasks(&scheduler).await {
+        let raft_config = match node.extract::<RwLock<crate::config::Config>>() {
+            Some(cfg) => cfg.read().await.raft.clone(),
+            None => crate::config::RaftConfig::default(),
+        };
+        if let Err(e) = crate::raft_tasks::schedule_raft_tasks(&scheduler, &raft_config).await {
             eprintln!("Warning: Failed to schedule Raft tasks: {}", e);
         }
 
@@ -703,20 +707,26 @@ impl NodeBuilder {
             .map(|(id, _)| id.clone())
             .collect();
 
-        // Create Raft node with peer IDs
+        // Create Config first (other components need values from it)
+        let config_values = crate::config::Config::default();
+        let scheduler_buffer_size = config_values.scheduler.channel_buffer_size;
+
+        // Create Raft node with peer IDs and config
         let raft = constellation_raft::RaftNode::builder()
             .node_id(node_id.clone())
             .can_lead(self.can_lead)
             .peers(peer_ids)
+            .config(config_values.raft_crate.clone())
             .storage(constellation_raft::MemoryStorage::new())
             .state_machine(crate::mesh::AddressBook::new())
             .build()?;
+        let config = Data::new(RwLock::new(config_values));
 
         // Create Router (needs node_id and raft)
         let router = crate::router::Router::new(node_id.clone(), raft.clone());
 
-        // Create RpcClient (needs router)
-        let rpc_client = crate::rpc::RpcClient::new(router.clone());
+        // Create RpcClient (needs router and live config reference)
+        let rpc_client = crate::rpc::RpcClient::new(router.clone(), Data::clone(&config));
 
         // Auto-register components
         let mut data = self.data;
@@ -737,18 +747,18 @@ impl NodeBuilder {
         );
 
         // Create Scheduler and auto-register
-        let (scheduler, scheduler_rx) = Scheduler::new();
+        // Note: buffer size is read at creation time and can't be changed at runtime
+        let (scheduler, scheduler_rx) = Scheduler::new(scheduler_buffer_size);
         let scheduler_tx = scheduler.command_tx();
         data.insert(
             TypeId::of::<Data<Scheduler>>(),
             Box::new(Data::new(scheduler)),
         );
 
-        // Create Config and auto-register
-        let config = crate::config::Config::default();
+        // Register Config (already created above for RpcClient)
         data.insert(
             TypeId::of::<Data<RwLock<crate::config::Config>>>(),
-            Box::new(Data::new(RwLock::new(config))),
+            Box::new(config),
         );
 
         // Create shutdown channel

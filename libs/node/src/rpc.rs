@@ -16,20 +16,14 @@
 // This avoids the overhead of serializing Vec<u8> within RpcRequest.
 // Channel provides outer framing; this is inner framing for efficiency.
 
+use crate::config::Config;
+use crate::Data;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 use uuid::Uuid;
-
-/// Default maximum retry attempts
-const DEFAULT_MAX_ATTEMPTS: u32 = 3;
-
-/// Default timeout per attempt
-const DEFAULT_TIMEOUT_PER_ATTEMPT: Duration = Duration::from_secs(5);
-
-/// Default initial backoff delay
-const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 
 /// Backoff strategy for retries
 #[derive(Debug, Clone)]
@@ -45,12 +39,21 @@ pub enum BackoffStrategy {
     None,
 }
 
+impl BackoffStrategy {
+    /// Create default backoff strategy from Config
+    pub fn from_config(config: &Config) -> Self {
+        BackoffStrategy::Exponential {
+            initial: Duration::from_millis(config.rpc.initial_backoff_ms),
+            max: Duration::from_millis(config.rpc.max_backoff_ms),
+        }
+    }
+}
+
 impl Default for BackoffStrategy {
     fn default() -> Self {
-        BackoffStrategy::Exponential {
-            initial: DEFAULT_INITIAL_BACKOFF,
-            max: Duration::from_secs(5),
-        }
+        // Use Config defaults
+        let config = Config::default();
+        Self::from_config(&config)
     }
 }
 
@@ -204,19 +207,14 @@ pub fn parse_frame(frame: &[u8]) -> crate::Result<(RpcHeader, &[u8])> {
 pub struct RpcClient {
     /// Router for resolving routes and peers to connection targets
     router: crate::router::Router,
-
-    // Future: resiliency configuration
-    // config: Arc<ResiliencyConfig>,
+    /// Live config reference (reads current values at call time)
+    config: Data<RwLock<Config>>,
 }
 
 impl RpcClient {
-    /// Create a new RpcClient with a Router
-    ///
-    /// Typically you don't need to call this directly - `RpcClient` is
-    /// auto-registered as `Data<RpcClient>` when building a Node.
-    /// This is useful for testing or custom scenarios.
-    pub fn new(router: crate::router::Router) -> Self {
-        Self { router }
+    /// Create a new RpcClient with a Router and config
+    pub fn new(router: crate::router::Router, config: Data<RwLock<Config>>) -> Self {
+        Self { router, config }
     }
 
     /// Make an RPC call to another service
@@ -294,21 +292,29 @@ impl Clone for RpcClient {
     fn clone(&self) -> Self {
         Self {
             router: self.router.clone(),
+            config: Data::clone(&self.config),
         }
     }
 }
 
 /// Builder for configuring per-call retry and timeout options
+///
+/// Override fields are Option - None means "read from config at call time".
+/// This ensures runtime config changes via management API take effect.
 pub struct RpcCallBuilder<Resp> {
     client: RpcClient,
     route: String,
     /// Optional specific peer to call (None = use route resolution)
     peer_id: Option<String>,
     payload: Vec<u8>,
-    max_attempts: u32,
-    timeout_per_attempt: Duration,
+    /// Override: max retry attempts (None = use config)
+    max_attempts: Option<u32>,
+    /// Override: timeout per attempt (None = use config)
+    timeout_per_attempt: Option<Duration>,
+    /// Total timeout across all attempts (None = no limit)
     total_timeout: Option<Duration>,
-    backoff: BackoffStrategy,
+    /// Override: backoff strategy (None = use config)
+    backoff: Option<BackoffStrategy>,
     _phantom: PhantomData<Resp>,
 }
 
@@ -322,29 +328,29 @@ where
             route,
             peer_id,
             payload,
-            max_attempts: DEFAULT_MAX_ATTEMPTS,
-            timeout_per_attempt: DEFAULT_TIMEOUT_PER_ATTEMPT,
+            max_attempts: None,
+            timeout_per_attempt: None,
             total_timeout: None,
-            backoff: BackoffStrategy::default(),
+            backoff: None,
             _phantom: PhantomData,
         }
     }
 
-    /// Set maximum number of retry attempts (default: 3)
+    /// Set maximum number of retry attempts (overrides config)
     pub fn max_attempts(mut self, n: u32) -> Self {
-        self.max_attempts = n;
+        self.max_attempts = Some(n);
         self
     }
 
     /// Disable retries (equivalent to max_attempts(1))
     pub fn no_retry(mut self) -> Self {
-        self.max_attempts = 1;
+        self.max_attempts = Some(1);
         self
     }
 
-    /// Set timeout for each individual attempt (default: 5s)
+    /// Set timeout for each individual attempt (overrides config)
     pub fn timeout_per_attempt(mut self, duration: Duration) -> Self {
-        self.timeout_per_attempt = duration;
+        self.timeout_per_attempt = Some(duration);
         self
     }
 
@@ -354,9 +360,9 @@ where
         self
     }
 
-    /// Set backoff strategy between retries (default: exponential 100ms-5s)
+    /// Set backoff strategy between retries (overrides config)
     pub fn backoff(mut self, strategy: BackoffStrategy) -> Self {
-        self.backoff = strategy;
+        self.backoff = Some(strategy);
         self
     }
 }
@@ -378,10 +384,23 @@ where
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
+            // Read config at call time (not at builder creation time)
+            // This ensures runtime config changes take effect
+            let config = self.client.config.read().await;
+            let max_attempts = self.max_attempts.unwrap_or(config.rpc.max_attempts);
+            let timeout_per_attempt = self
+                .timeout_per_attempt
+                .unwrap_or_else(|| Duration::from_millis(config.rpc.timeout_per_attempt_ms));
+            let backoff = self
+                .backoff
+                .clone()
+                .unwrap_or_else(|| BackoffStrategy::from_config(&config));
+            drop(config); // Release lock before retry loop
+
             let start = Instant::now();
             let mut last_error: Option<crate::Error> = None;
 
-            for attempt in 0..self.max_attempts {
+            for attempt in 0..max_attempts {
                 // Check total timeout before attempting
                 if let Some(total) = self.total_timeout {
                     if start.elapsed() >= total {
@@ -393,7 +412,7 @@ where
 
                 // Apply backoff delay (skip on first attempt)
                 if attempt > 0 {
-                    let delay = self.backoff.delay_for_attempt(attempt - 1);
+                    let delay = backoff.delay_for_attempt(attempt - 1);
                     if !delay.is_zero() {
                         tokio::time::sleep(delay).await;
                     }
@@ -407,7 +426,7 @@ where
                     &self.payload,
                 );
 
-                let result = tokio::time::timeout(self.timeout_per_attempt, attempt_future).await;
+                let result = tokio::time::timeout(timeout_per_attempt, attempt_future).await;
 
                 match result {
                     Ok(Ok(response)) => return Ok(response),
@@ -420,7 +439,7 @@ where
                         last_error = Some(crate::Error::Timeout(format!(
                             "Attempt {} timed out after {:?}",
                             attempt + 1,
-                            self.timeout_per_attempt
+                            timeout_per_attempt
                         )));
                         // Continue to next attempt
                     }

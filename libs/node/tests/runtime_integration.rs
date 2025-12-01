@@ -3,10 +3,11 @@
 use constellation_fabric::codec::{BincodeCodec, Codec};
 use constellation_fabric::transport::{TcpTransport, TcpTransportListener, Transport};
 use constellation_node::mesh::{AddressBook, AddressBookCommand, AddressGroup, Capabilities, TransponderData};
-use constellation_node::{handler, Node, RpcClient};
+use constellation_node::{handler, Config, Data, Node, RpcClient};
 use constellation_raft::StateMachine;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -249,7 +250,8 @@ async fn test_rpc_client_end_to_end() {
 
     // Create router and rpc client manually for this test
     let router = constellation_node::Router::new("client-node".to_string(), client_raft);
-    let rpc = RpcClient::new(router);
+    let config = Data::new(RwLock::new(Config::default()));
+    let rpc = RpcClient::new(router, config);
 
     // Make RPC call using RpcClient
     let request = AddRequest { a: 10, b: 20 };
@@ -315,7 +317,8 @@ async fn test_rpc_client_call_peer() {
         .unwrap();
 
     let router = constellation_node::Router::new("client-node".to_string(), client_raft);
-    let rpc = RpcClient::new(router);
+    let config = Data::new(RwLock::new(Config::default()));
+    let rpc = RpcClient::new(router, config);
 
     // Make RPC call directly to peer
     let request = AddRequest { a: 7, b: 8 };

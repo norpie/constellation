@@ -3,6 +3,7 @@
 //! This crate provides a generic Raft consensus algorithm implementation
 //! that can be used with any storage backend and state machine.
 
+mod config;
 mod error;
 mod log;
 mod node;
@@ -11,6 +12,7 @@ mod state;
 mod state_machine;
 mod storage;
 
+pub use config::RaftConfig;
 pub use error::{Error, Result};
 pub use log::{LogEntry, LogIndex, Term};
 pub use node::{ElectionResult, RaftNode, RaftNodeBuilder};

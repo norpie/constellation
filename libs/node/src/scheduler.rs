@@ -3,6 +3,7 @@
 //! Provides delayed, scheduled, and interval-based task execution with the same
 //! extractor pattern used by handlers.
 
+use crate::config::Config;
 use crate::node::Data;
 use chrono::{DateTime, Utc};
 use rand::Rng;
@@ -12,7 +13,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch, RwLock};
 use uuid::Uuid;
 
 // ============================================================================
@@ -283,8 +284,11 @@ pub struct Scheduler {
 
 impl Scheduler {
     /// Create a new scheduler, returning both the handle and the command receiver
-    pub(crate) fn new() -> (Self, mpsc::Receiver<SchedulerCommand>) {
-        let (command_tx, command_rx) = mpsc::channel(256);
+    ///
+    /// The buffer_size parameter sets the channel capacity. This can only be set
+    /// at creation time - runtime config changes won't affect it.
+    pub(crate) fn new(buffer_size: usize) -> (Self, mpsc::Receiver<SchedulerCommand>) {
+        let (command_tx, command_rx) = mpsc::channel(buffer_size);
         (Self { command_tx }, command_rx)
     }
 
@@ -575,10 +579,22 @@ pub(crate) async fn run_scheduler_loop(
 
     loop {
         // Calculate time until next task
+        // Read idle_sleep_secs from config (if no tasks pending)
+        let default_sleep = data
+            .get(&TypeId::of::<Data<RwLock<Config>>>())
+            .and_then(|any| any.downcast_ref::<Data<RwLock<Config>>>())
+            .map(|cfg| {
+                // Use try_read to avoid blocking - fall back to default if locked
+                cfg.try_read()
+                    .map(|c| Duration::from_secs(c.scheduler.idle_sleep_secs))
+                    .unwrap_or(Duration::from_secs(3600))
+            })
+            .unwrap_or(Duration::from_secs(3600));
+
         let sleep_duration = pending
             .peek()
             .map(|p| p.next_run.saturating_duration_since(Instant::now()))
-            .unwrap_or(Duration::from_secs(3600)); // 1 hour default
+            .unwrap_or(default_sleep);
 
         tokio::select! {
             biased;

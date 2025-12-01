@@ -5,6 +5,7 @@
 //! - Heartbeat: leader sends AppendEntries to all peers
 //! - Apply committed: applies committed log entries to the state machine
 
+use crate::config::RaftConfig;
 use crate::mesh::{AddressBook, AddressBookCommand};
 use crate::rpc::RpcClient;
 use crate::scheduler::{Schedule, Scheduler, TaskContext};
@@ -12,21 +13,20 @@ use constellation_fabric::codec::{BincodeCodec, Codec};
 use constellation_raft::RaftNode;
 use std::time::Duration;
 
-// Timing constants (per Raft paper recommendations)
-const ELECTION_TIMEOUT_MIN: Duration = Duration::from_millis(150);
-const ELECTION_TIMEOUT_MAX: Duration = Duration::from_millis(300);
-const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(50);
-const APPLY_INTERVAL: Duration = Duration::from_millis(10);
-
 /// Schedule Raft background tasks (election timeout + heartbeat + apply)
 ///
 /// This should be called during node startup after the scheduler is running.
-pub async fn schedule_raft_tasks(scheduler: &Scheduler) -> crate::Result<()> {
+pub async fn schedule_raft_tasks(scheduler: &Scheduler, config: &RaftConfig) -> crate::Result<()> {
+    let election_min = Duration::from_millis(config.election_timeout_min_ms);
+    let election_max = Duration::from_millis(config.election_timeout_max_ms);
+    let heartbeat = Duration::from_millis(config.heartbeat_interval_ms);
+    let apply = Duration::from_millis(config.apply_interval_ms);
+
     // Schedule election timeout task
     scheduler
         .schedule_named(
             "election_timeout",
-            Schedule::random_interval(ELECTION_TIMEOUT_MIN, ELECTION_TIMEOUT_MAX),
+            Schedule::random_interval(election_min, election_max),
             election_timeout_task,
         )
         .await?;
@@ -35,7 +35,7 @@ pub async fn schedule_raft_tasks(scheduler: &Scheduler) -> crate::Result<()> {
     scheduler
         .schedule_named(
             "leader_heartbeat",
-            Schedule::every(HEARTBEAT_INTERVAL),
+            Schedule::every(heartbeat),
             heartbeat_task,
         )
         .await?;
@@ -44,7 +44,7 @@ pub async fn schedule_raft_tasks(scheduler: &Scheduler) -> crate::Result<()> {
     scheduler
         .schedule_named(
             "apply_committed",
-            Schedule::every(APPLY_INTERVAL),
+            Schedule::every(apply),
             apply_committed_task,
         )
         .await?;

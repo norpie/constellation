@@ -16,9 +16,66 @@ use smart_default::SmartDefault;
 #[derive(Debug, Clone, Serialize, Deserialize, SmartDefault, JsonSchema)]
 #[serde(default)]
 pub struct Config {
-    /// Placeholder - will be replaced with real config sections
-    #[default = 42]
-    pub placeholder: u64,
+    /// Raft consensus timing configuration (node-level: election, heartbeat)
+    pub raft: RaftConfig,
+    /// Raft algorithm configuration (crate-level: snapshot threshold)
+    #[default(RaftCrateConfig::default())]
+    pub raft_crate: RaftCrateConfig,
+    /// RPC client retry and timeout configuration
+    pub rpc: RpcConfig,
+    /// Scheduler configuration
+    pub scheduler: SchedulerConfig,
+}
+
+/// Re-export raft crate's config for convenience
+pub use constellation_raft::RaftConfig as RaftCrateConfig;
+
+/// Raft consensus timing configuration
+#[derive(Debug, Clone, Serialize, Deserialize, SmartDefault, JsonSchema)]
+#[serde(default)]
+pub struct RaftConfig {
+    /// Minimum election timeout in milliseconds (default: 150)
+    #[default = 150]
+    pub election_timeout_min_ms: u64,
+    /// Maximum election timeout in milliseconds (default: 300)
+    #[default = 300]
+    pub election_timeout_max_ms: u64,
+    /// Leader heartbeat interval in milliseconds (default: 50)
+    #[default = 50]
+    pub heartbeat_interval_ms: u64,
+    /// Interval to check for committed entries to apply in milliseconds (default: 10)
+    #[default = 10]
+    pub apply_interval_ms: u64,
+}
+
+/// RPC client retry and timeout configuration
+#[derive(Debug, Clone, Serialize, Deserialize, SmartDefault, JsonSchema)]
+#[serde(default)]
+pub struct RpcConfig {
+    /// Default maximum retry attempts (default: 3)
+    #[default = 3]
+    pub max_attempts: u32,
+    /// Default timeout per attempt in milliseconds (default: 5000)
+    #[default = 5000]
+    pub timeout_per_attempt_ms: u64,
+    /// Initial backoff delay for exponential retry in milliseconds (default: 100)
+    #[default = 100]
+    pub initial_backoff_ms: u64,
+    /// Maximum backoff delay cap in milliseconds (default: 5000)
+    #[default = 5000]
+    pub max_backoff_ms: u64,
+}
+
+/// Scheduler configuration
+#[derive(Debug, Clone, Serialize, Deserialize, SmartDefault, JsonSchema)]
+#[serde(default)]
+pub struct SchedulerConfig {
+    /// Command channel buffer size (default: 256)
+    #[default = 256]
+    pub channel_buffer_size: usize,
+    /// Sleep duration when no tasks are scheduled, in seconds (default: 3600)
+    #[default = 3600]
+    pub idle_sleep_secs: u64,
 }
 
 /// Error type for path operations
