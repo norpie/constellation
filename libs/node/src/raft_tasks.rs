@@ -68,6 +68,8 @@ async fn election_timeout_task(ctx: TaskContext) {
         return;
     };
 
+    let node_id = raft.node_id().await;
+
     // Don't start elections if we're already leader
     if raft.is_leader().await {
         return;
@@ -78,9 +80,17 @@ async fn election_timeout_task(ctx: TaskContext) {
         return;
     }
 
+    println!("[{}] Election timeout fired, starting election...", node_id);
+
     // Start election
     if let Err(e) = raft.start_election().await {
         eprintln!("election_timeout: Failed to start election: {}", e);
+        return;
+    }
+
+    // Check if we already won (single-node case)
+    if raft.is_leader().await {
+        println!("[{}] Won election immediately (single-node majority)", node_id);
         return;
     }
 
@@ -105,8 +115,12 @@ async fn election_timeout_task(ctx: TaskContext) {
         })
         .await;
 
+    println!("[{}] Requesting votes from {} peers: {:?}", node_id, peers.len(), peers);
+
     // Send vote requests to all peers
     for peer_id in peers {
+        println!("[{}] Sending vote request to {}", node_id, peer_id);
+
         // Send vote request to peer
         let response = match rpc.call_peer(&peer_id, "_raft.request_vote.v1", &request) {
             Ok(builder) => builder.await,
@@ -121,18 +135,20 @@ async fn election_timeout_task(ctx: TaskContext) {
 
         match response {
             Ok(resp) => {
+                let resp: constellation_raft::RequestVoteResponse = resp;
+                println!("[{}] Got vote response from {}: granted={}", node_id, peer_id, resp.vote_granted);
                 // Handle vote response
                 match raft.handle_request_vote_response(&peer_id, resp).await {
                     Ok(constellation_raft::ElectionResult::Won) => {
-                        // We won! The heartbeat task will now start sending
+                        println!("[{}] Won election!", node_id);
                         return;
                     }
-                    Ok(constellation_raft::ElectionResult::Lost(_)) => {
-                        // We lost (saw higher term), stop requesting votes
+                    Ok(constellation_raft::ElectionResult::Lost(term)) => {
+                        println!("[{}] Lost election (saw term {})", node_id, term);
                         return;
                     }
                     Ok(constellation_raft::ElectionResult::StillVoting) => {
-                        // Continue collecting votes
+                        println!("[{}] Still collecting votes...", node_id);
                     }
                     Err(e) => {
                         eprintln!(
@@ -144,13 +160,12 @@ async fn election_timeout_task(ctx: TaskContext) {
             }
             Err(e) => {
                 // RPC failed - peer might be down, continue with other peers
-                eprintln!(
-                    "election_timeout: Failed to send vote request to {}: {}",
-                    peer_id, e
-                );
+                println!("[{}] Vote request to {} failed: {}", node_id, peer_id, e);
             }
         }
     }
+
+    println!("[{}] Election round complete, still candidate", node_id);
 }
 
 /// Leader heartbeat task - sends AppendEntries to all peers
