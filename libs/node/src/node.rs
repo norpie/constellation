@@ -51,12 +51,21 @@ pub struct Node {
     listeners: Vec<(Box<dyn ListenerHandle>, String)>,
     advertise_addresses: Vec<crate::mesh::AddressGroup>,
     raft: constellation_raft::RaftNode<crate::mesh::AddressBook>,
-    bootstrap_peers: Vec<(String, crate::mesh::AddressGroup)>, // consumed during startup
     // Scheduler fields
     scheduler_rx: Option<mpsc::Receiver<SchedulerCommand>>,
     scheduler_tx: mpsc::Sender<SchedulerCommand>,
     shutdown_tx: watch::Sender<bool>,
     initial_tasks: Vec<ScheduledTaskConfig>,
+}
+
+/// A node ready to be started
+///
+/// This is a temporary wrapper returned by `NodeBuilder::build()` that holds
+/// the bootstrap configuration separately from the Node. When `start()` is called,
+/// the bootstrap peers are consumed and the Node is wrapped in an Arc for the runtime.
+pub struct StartableNode {
+    node: Node,
+    bootstrap_peers: Vec<(String, crate::mesh::AddressGroup)>,
 }
 
 impl Node {
@@ -92,6 +101,38 @@ impl Node {
     pub fn id_fallback(&self) -> Option<&Arc<dyn Fn(String) -> String + Send + Sync>> {
         self.id_fallback.as_ref()
     }
+}
+
+impl StartableNode {
+    /// Get a reference to the inner Node
+    pub fn node(&self) -> &Node {
+        &self.node
+    }
+
+    /// Extract shared data by type (delegates to inner Node)
+    pub fn extract<T: 'static>(&self) -> Option<Data<T>> {
+        self.node.extract()
+    }
+
+    /// Get the service name (delegates to inner Node)
+    pub fn service_name(&self) -> &str {
+        self.node.service_name()
+    }
+
+    /// Get the node ID (delegates to inner Node)
+    pub fn node_id(&self) -> &str {
+        self.node.node_id()
+    }
+
+    /// Check if this node can become a leader (delegates to inner Node)
+    pub fn can_lead(&self) -> bool {
+        self.node.can_lead()
+    }
+
+    /// Get the ID fallback strategy (delegates to inner Node)
+    pub fn id_fallback(&self) -> Option<&Arc<dyn Fn(String) -> String + Send + Sync>> {
+        self.node.id_fallback()
+    }
 
     /// Start the node runtime
     ///
@@ -115,22 +156,25 @@ impl Node {
     ///
     /// node.start().await?; // Runs forever
     /// ```
-    pub async fn start(mut self) -> Result<()> {
-        // Extract fields before wrapping in Arc
-        let listeners = std::mem::take(&mut self.listeners);
-        let scheduler_rx = self.scheduler_rx.take();
-        let initial_tasks = std::mem::take(&mut self.initial_tasks);
-        let bootstrap_peers = std::mem::take(&mut self.bootstrap_peers);
-        let advertise_addresses = std::mem::take(&mut self.advertise_addresses);
-        let data = Arc::clone(&self.data);
-        let routes = Arc::clone(&self.routes);
-        let shutdown_tx = self.shutdown_tx.clone();
-        let scheduler_tx = self.scheduler_tx.clone();
-        let node_id = self.node_id.clone();
-        let can_lead = self.can_lead;
-        let raft = self.raft.clone();
+    pub async fn start(self) -> Result<()> {
+        // Extract bootstrap_peers (will be dropped after use)
+        let bootstrap_peers = self.bootstrap_peers;
+        let mut node = self.node;
 
-        let node = Arc::new(self);
+        // Extract fields before wrapping in Arc
+        let listeners = std::mem::take(&mut node.listeners);
+        let scheduler_rx = node.scheduler_rx.take();
+        let initial_tasks = std::mem::take(&mut node.initial_tasks);
+        let advertise_addresses = std::mem::take(&mut node.advertise_addresses);
+        let data = Arc::clone(&node.data);
+        let routes = Arc::clone(&node.routes);
+        let shutdown_tx = node.shutdown_tx.clone();
+        let scheduler_tx = node.scheduler_tx.clone();
+        let node_id = node.node_id.clone();
+        let can_lead = node.can_lead;
+        let raft = node.raft.clone();
+
+        let node = Arc::new(node);
 
         // 1. Spawn listener tasks (accept connections)
         for (listener, zone) in listeners {
@@ -192,6 +236,8 @@ impl Node {
         // 3. Bootstrap: join cluster or form new one
         let self_data = build_self_transponder_data(&node_id, &advertise_addresses, &routes);
         bootstrap_join(&bootstrap_peers, &self_data, &raft, can_lead).await?;
+
+        // bootstrap_peers is dropped here (local variable goes out of scope after use)
 
         // 4. NOW schedule Raft tasks (we're part of a cluster)
         let scheduler = Scheduler::from_sender(scheduler_tx.clone());
@@ -577,7 +623,9 @@ impl NodeBuilder {
     /// - Prepend service name to all routes
     /// - Register built-in handlers
     /// - Auto-register RpcClient as Data<RpcClient>
-    pub fn build(self) -> Result<Node> {
+    ///
+    /// Returns a `StartableNode` which can be started with `.start().await`.
+    pub fn build(self) -> Result<StartableNode> {
         let service_name = self
             .service_name
             .ok_or_else(|| Error::Custom("Service name is required".to_string()))?;
@@ -667,7 +715,7 @@ impl NodeBuilder {
 
         // TODO: Register built-in handlers (_mesh.*, _raft.*, etc.)
 
-        Ok(Node {
+        let node = Node {
             service_name,
             node_id,
             can_lead: self.can_lead,
@@ -677,11 +725,15 @@ impl NodeBuilder {
             listeners: self.listeners,
             advertise_addresses: self.advertise_addresses,
             raft,
-            bootstrap_peers: self.bootstrap_peers,
             scheduler_rx: Some(scheduler_rx),
             scheduler_tx,
             shutdown_tx,
             initial_tasks: self.scheduled_tasks,
+        };
+
+        Ok(StartableNode {
+            node,
+            bootstrap_peers: self.bootstrap_peers,
         })
     }
 }

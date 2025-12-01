@@ -16,7 +16,7 @@ pub use constellation_node_derive::handler;
 // Re-export commonly used types
 pub use codec::{BincodeFactory, CodecFactory, RawCodecFactory, TypedCodec};
 pub use error::{Error, Result};
-pub use node::{Data, Node, NodeBuilder};
+pub use node::{Data, Node, NodeBuilder, StartableNode};
 pub use rpc::{
     ErrorCategory, ErrorResponder, HandlerError, Responder, RpcClient, RpcRequest, RpcResponse,
     ResponseResult,
