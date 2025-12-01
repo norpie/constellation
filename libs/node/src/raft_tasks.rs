@@ -3,10 +3,12 @@
 //! This module provides the scheduled tasks needed for Raft consensus:
 //! - Election timeout: triggers elections when no heartbeat received
 //! - Heartbeat: leader sends AppendEntries to all peers
+//! - Apply committed: applies committed log entries to the state machine
 
-use crate::mesh::AddressBook;
+use crate::mesh::{AddressBook, AddressBookCommand};
 use crate::rpc::RpcClient;
 use crate::scheduler::{Schedule, Scheduler, TaskContext};
+use constellation_fabric::codec::{BincodeCodec, Codec};
 use constellation_raft::RaftNode;
 use std::time::Duration;
 
@@ -14,8 +16,9 @@ use std::time::Duration;
 const ELECTION_TIMEOUT_MIN: Duration = Duration::from_millis(150);
 const ELECTION_TIMEOUT_MAX: Duration = Duration::from_millis(300);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(50);
+const APPLY_INTERVAL: Duration = Duration::from_millis(10);
 
-/// Schedule Raft background tasks (election timeout + heartbeat)
+/// Schedule Raft background tasks (election timeout + heartbeat + apply)
 ///
 /// This should be called during node startup after the scheduler is running.
 pub async fn schedule_raft_tasks(scheduler: &Scheduler) -> crate::Result<()> {
@@ -34,6 +37,15 @@ pub async fn schedule_raft_tasks(scheduler: &Scheduler) -> crate::Result<()> {
             "leader_heartbeat",
             Schedule::every(HEARTBEAT_INTERVAL),
             heartbeat_task,
+        )
+        .await?;
+
+    // Schedule apply committed entries task
+    scheduler
+        .schedule_named(
+            "apply_committed",
+            Schedule::every(APPLY_INTERVAL),
+            apply_committed_task,
         )
         .await?;
 
@@ -194,6 +206,75 @@ async fn heartbeat_task(ctx: TaskContext) {
                     "heartbeat: Failed to send append_entries to {}: {}",
                     peer_id, e
                 );
+            }
+        }
+    }
+}
+
+/// Apply committed entries to the state machine
+///
+/// This task runs frequently to apply any entries that have been
+/// committed but not yet applied to the AddressBook.
+async fn apply_committed_task(ctx: TaskContext) {
+    // Extract dependencies
+    let Some(raft) = ctx.extract::<RaftNode<AddressBook>>() else {
+        eprintln!("apply_committed: Failed to extract RaftNode");
+        return;
+    };
+
+    // Get the starting index for tracking
+    let start_index = raft.last_applied().await + 1;
+
+    // Get unapplied entries (raft returns raw LogEntry)
+    let entries = match raft.get_unapplied_entries().await {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("apply_committed: Failed to get unapplied entries: {}", e);
+            return;
+        }
+    };
+
+    if entries.is_empty() {
+        return;
+    }
+
+    // Apply each entry in order
+    for (i, entry) in entries.into_iter().enumerate() {
+        let index = start_index + i as u64;
+
+        // Deserialize command from raw bytes (node crate handles codec)
+        let command: AddressBookCommand = match BincodeCodec.decode(&entry.command) {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                eprintln!(
+                    "apply_committed: Failed to deserialize command at index {}: {}",
+                    index, e
+                );
+                // This shouldn't happen - it means corrupted log entry
+                // Stop processing to avoid applying out of order
+                break;
+            }
+        };
+
+        // Apply to state machine
+        match raft.apply_to_state_machine(command).await {
+            Ok(_response) => {
+                // Mark this entry as applied
+                if let Err(e) = raft.mark_applied(index).await {
+                    eprintln!(
+                        "apply_committed: Failed to mark index {} as applied: {}",
+                        index, e
+                    );
+                    break;
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "apply_committed: Failed to apply command at index {}: {}",
+                    index, e
+                );
+                // Stop on first failure - entries must be applied in order
+                break;
             }
         }
     }
