@@ -77,9 +77,17 @@ impl StateMachine for AddressBook {
             AddressBookCommand::Join(transponder_data) => {
                 let node_id = transponder_data.node_id.clone();
 
-                // Check if already exists
-                if self.nodes.contains_key(&node_id) {
-                    return Ok(AddressBookResponse::AlreadyExists);
+                // Remove old entry if exists (upsert behavior)
+                // This handles: duplicate joins, bootstrap data replacement, re-joins
+                if let Some(old_data) = self.nodes.remove(&node_id) {
+                    for route in &old_data.routes {
+                        if let Some(nodes) = self.route_index.get_mut(route) {
+                            nodes.retain(|id| id != &node_id);
+                            if nodes.is_empty() {
+                                self.route_index.remove(route);
+                            }
+                        }
+                    }
                 }
 
                 // Add to route index
@@ -198,10 +206,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_address_book_join_duplicate() {
+    async fn test_address_book_join_upsert() {
         let mut book = AddressBook::new();
 
-        let data = TransponderData::builder()
+        let data1 = TransponderData::builder()
             .node_id("node-1")
             .transport("tcp")
             .codec("bincode")
@@ -210,10 +218,28 @@ mod tests {
             .capabilities(Capabilities::basic())
             .build();
 
-        book.apply(AddressBookCommand::Join(data.clone())).await.unwrap();
-        let response = book.apply(AddressBookCommand::Join(data)).await.unwrap();
+        book.apply(AddressBookCommand::Join(data1)).await.unwrap();
 
-        assert!(matches!(response, AddressBookResponse::AlreadyExists));
+        // Join again with updated data (upsert behavior)
+        let data2 = TransponderData::builder()
+            .node_id("node-1")
+            .transport("tcp")
+            .codec("bincode")
+            .route("Service.method.v2") // Different route
+            .address(AddressGroup::single("default", "tcp", "127.0.0.1:9090")) // Different address
+            .capabilities(Capabilities::basic())
+            .build();
+
+        let response = book.apply(AddressBookCommand::Join(data2)).await.unwrap();
+        assert!(matches!(response, AddressBookResponse::Success));
+
+        // Old route should be gone, new route should exist
+        assert!(book.get_nodes_for_route("Service.method.v1").is_none());
+        assert_eq!(book.get_nodes_for_route("Service.method.v2").unwrap().len(), 1);
+
+        // Address should be updated
+        let node = book.get_node("node-1").unwrap();
+        assert_eq!(node.addresses[0].addresses[0], "127.0.0.1:9090");
     }
 
     #[tokio::test]
