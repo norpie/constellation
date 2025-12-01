@@ -481,8 +481,17 @@ impl NodeBuilder {
     /// Manually register a handler
     ///
     /// The route will be prepended with the service name during build.
+    /// If a handler is already registered for this route, the new one is skipped.
     pub fn register(mut self, route: impl Into<String>, handler: &'static dyn Handler) -> Self {
-        self.routes.insert(route.into(), handler);
+        let route = route.into();
+        if self.routes.contains_key(&route) {
+            eprintln!(
+                "Warning: Duplicate handler registration for route '{}', skipping",
+                route
+            );
+        } else {
+            self.routes.insert(route, handler);
+        }
         self
     }
 
@@ -670,8 +679,13 @@ impl NodeBuilder {
                     )
                 };
 
-                // Skip if already manually registered (manual takes precedence)
-                if !routes.contains_key(&route) {
+                // Skip if already registered (manual or earlier auto-discovered takes precedence)
+                if routes.contains_key(&route) {
+                    eprintln!(
+                        "Warning: Duplicate handler for route '{}' during auto-discovery, skipping",
+                        route
+                    );
+                } else {
                     routes.insert(route, registration.handler);
                 }
             }
