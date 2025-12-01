@@ -1,4 +1,5 @@
 pub mod codec;
+pub mod config;
 pub mod error;
 pub mod handler;
 pub mod mesh;
@@ -15,6 +16,7 @@ pub use constellation_node_derive::handler;
 
 // Re-export commonly used types
 pub use codec::{BincodeFactory, CodecFactory, RawCodecFactory, TypedCodec};
+pub use config::Config;
 pub use error::{Error, Result};
 pub use node::{Data, Node, NodeBuilder, StartableNode};
 pub use rpc::{
