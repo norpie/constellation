@@ -194,6 +194,36 @@ impl<SM: StateMachine> RaftNode<SM> {
         inner.state_machine.apply(command).await
     }
 
+    /// Submit a command to be replicated via Raft consensus
+    ///
+    /// This appends the command to the leader's log. The command will be replicated
+    /// to followers via the heartbeat task and committed once a majority acknowledge.
+    ///
+    /// Returns the log index where the command was appended. The caller can poll
+    /// `last_applied() >= index` to know when the command has been applied to the
+    /// state machine.
+    ///
+    /// Returns `Error::NotLeader` if this node is not the current leader.
+    pub async fn submit_command(&self, command: Vec<u8>) -> Result<LogIndex> {
+        let mut inner = self.inner.write().await;
+
+        // Must be leader to accept commands
+        if !inner.state.is_leader() {
+            return Err(Error::NotLeader);
+        }
+
+        // Get current term
+        let term = inner.storage.get_term().await?;
+
+        // Append to log
+        let entry = crate::LogEntry::new(term, command);
+        inner.storage.append_entries(vec![entry]).await?;
+
+        // Return the index of the new entry
+        let index = inner.storage.last_log_index().await?;
+        Ok(index)
+    }
+
     // State transition methods
 
     /// Convert to follower state
@@ -1457,5 +1487,61 @@ mod tests {
         // Can't go backwards
         let result = node.mark_applied(1).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_submit_command_not_leader() {
+        let node = RaftNode::builder()
+            .node_id("node-1")
+            .state_machine(TestStateMachine)
+            .build()
+            .unwrap();
+
+        // Starts as follower, should reject
+        assert_eq!(node.state().await, State::Follower);
+        let result = node.submit_command(vec![1, 2, 3]).await;
+        assert!(matches!(result, Err(crate::Error::NotLeader)));
+    }
+
+    #[tokio::test]
+    async fn test_submit_command_as_leader() {
+        let node = RaftNode::builder()
+            .node_id("node-1")
+            .peers(vec!["node-2".to_string()])
+            .state_machine(TestStateMachine)
+            .build()
+            .unwrap();
+
+        // Start election and win (2-node cluster, we vote for self = majority)
+        node.start_election().await.unwrap();
+        let response = crate::RequestVoteResponse {
+            term: 1,
+            vote_granted: true,
+        };
+        let result = node
+            .handle_request_vote_response("node-2", response)
+            .await
+            .unwrap();
+        assert_eq!(result, ElectionResult::Won);
+        assert!(node.is_leader().await);
+
+        // Now submit commands
+        let index1 = node.submit_command(vec![1, 2, 3]).await.unwrap();
+        assert_eq!(index1, 1);
+
+        let index2 = node.submit_command(vec![4, 5, 6]).await.unwrap();
+        assert_eq!(index2, 2);
+
+        // Verify entries are in log
+        let inner = node.inner.read().await;
+        assert_eq!(inner.storage.last_log_index().await.unwrap(), 2);
+
+        let entry1 = inner.storage.get_entry(1).await.unwrap().unwrap();
+        assert_eq!(entry1.term, 1);
+        assert_eq!(entry1.command, vec![1, 2, 3]);
+
+        let entry2 = inner.storage.get_entry(2).await.unwrap().unwrap();
+        assert_eq!(entry2.term, 1);
+        assert_eq!(entry2.command, vec![4, 5, 6]);
     }
 }
