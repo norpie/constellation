@@ -182,6 +182,18 @@ impl<SM: StateMachine> RaftNode<SM> {
         Ok(())
     }
 
+    /// Apply a command to the state machine
+    ///
+    /// This takes an already-deserialized command and applies it to the state machine.
+    /// The caller is responsible for deserializing the raw bytes from LogEntry.command
+    /// (keeping raft codec-agnostic).
+    ///
+    /// Returns the response from the state machine.
+    pub async fn apply_to_state_machine(&self, command: SM::Command) -> Result<SM::Response> {
+        let mut inner = self.inner.write().await;
+        inner.state_machine.apply(command).await
+    }
+
     // State transition methods
 
     /// Convert to follower state
