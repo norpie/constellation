@@ -9,8 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Helper to create a node and spawn its scheduler loop for testing.
-/// Returns the scheduler and a counter for verification.
-async fn create_test_scheduler() -> (Data<Scheduler>, Arc<AtomicU32>) {
+/// Returns the scheduler, a counter for verification, and the running node.
+/// The running node must be kept alive for the duration of the test.
+async fn create_test_scheduler() -> (Data<Scheduler>, Arc<AtomicU32>, Arc<constellation_node::Node>) {
     let counter = Arc::new(AtomicU32::new(0));
 
     let node = Node::builder()
@@ -22,21 +23,19 @@ async fn create_test_scheduler() -> (Data<Scheduler>, Arc<AtomicU32>) {
 
     let scheduler: Data<Scheduler> = node.extract().unwrap();
 
-    // Spawn node in background (this starts the scheduler loop)
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive (dropping it would stop the scheduler)
+    let running_node = node.start().await.unwrap();
 
     // Give scheduler loop time to start
     tokio::time::sleep(Duration::from_millis(10)).await;
 
-    (scheduler, counter)
+    (scheduler, counter, running_node)
 }
 
 #[tokio::test]
 async fn test_schedule_after() {
     // Test that a one-shot task runs after the specified delay
-    let (scheduler, counter) = create_test_scheduler().await;
+    let (scheduler, counter, _running_node) = create_test_scheduler().await;
 
     // Schedule task to run after 50ms
     let handle = scheduler
@@ -83,10 +82,8 @@ async fn test_schedule_interval() {
 
     let scheduler: Data<Scheduler> = node.extract().unwrap();
 
-    // Spawn node in background
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive
+    let _running_node = node.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // Schedule task to run every 30ms
@@ -125,10 +122,8 @@ async fn test_schedule_interval_initial_delay() {
 
     let scheduler: Data<Scheduler> = node.extract().unwrap();
 
-    // Spawn node in background
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive
+    let _running_node = node.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // Schedule with 100ms initial delay, then every 30ms
@@ -170,10 +165,8 @@ async fn test_overlap_skip() {
 
     let scheduler: Data<Scheduler> = node.extract().unwrap();
 
-    // Spawn node in background
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive
+    let _running_node = node.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // Schedule a slow task every 10ms with Skip policy (default)
@@ -218,10 +211,8 @@ async fn test_overlap_allow() {
 
     let scheduler: Data<Scheduler> = node.extract().unwrap();
 
-    // Spawn node in background
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive
+    let _running_node = node.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // Schedule a slow task every 10ms with Allow policy
@@ -263,10 +254,8 @@ async fn test_task_list() {
 
     let scheduler: Data<Scheduler> = node.extract().unwrap();
 
-    // Spawn node in background
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive
+    let _running_node = node.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // Schedule multiple tasks
@@ -310,10 +299,8 @@ async fn test_task_cancel() {
 
     let scheduler: Data<Scheduler> = node.extract().unwrap();
 
-    // Spawn node in background
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive
+    let _running_node = node.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // Schedule interval task
@@ -359,10 +346,8 @@ async fn test_task_kill() {
 
     let scheduler: Data<Scheduler> = node.extract().unwrap();
 
-    // Spawn node in background
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive
+    let _running_node = node.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // Schedule a task
@@ -396,10 +381,8 @@ async fn test_task_schedules_task() {
 
     let scheduler: Data<Scheduler> = node.extract().unwrap();
 
-    // Spawn node in background
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive
+    let _running_node = node.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // Schedule a task that schedules another task
@@ -455,10 +438,8 @@ async fn test_extract_in_task() {
 
     let scheduler: Data<Scheduler> = node.extract().unwrap();
 
-    // Spawn node in background
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive
+    let _running_node = node.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     let _handle = scheduler
@@ -487,10 +468,8 @@ async fn test_cron_not_implemented() {
 
     let scheduler: Data<Scheduler> = node.extract().unwrap();
 
-    // Spawn node in background
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive
+    let _running_node = node.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // Cron should return an error
@@ -518,10 +497,8 @@ async fn test_random_interval() {
 
     let scheduler: Data<Scheduler> = node.extract().unwrap();
 
-    // Spawn node in background
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive
+    let _running_node = node.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // Schedule task with random interval between 20-40ms
@@ -563,10 +540,8 @@ async fn test_task_reset() {
 
     let scheduler: Data<Scheduler> = node.extract().unwrap();
 
-    // Spawn node in background
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive
+    let _running_node = node.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // Schedule task to run after 100ms
@@ -609,10 +584,8 @@ async fn test_random_interval_reset() {
 
     let scheduler: Data<Scheduler> = node.extract().unwrap();
 
-    // Spawn node in background
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive
+    let _running_node = node.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // Schedule task with random interval between 100-150ms
@@ -655,10 +628,8 @@ async fn test_reset_cancelled_task() {
 
     let scheduler: Data<Scheduler> = node.extract().unwrap();
 
-    // Spawn node in background
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive
+    let _running_node = node.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // Schedule and then cancel
@@ -690,10 +661,8 @@ async fn test_handle_by_name() {
 
     let scheduler: Data<Scheduler> = node.extract().unwrap();
 
-    // Spawn node in background
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive
+    let _running_node = node.start().await.unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     // Schedule a named task
@@ -746,10 +715,8 @@ async fn test_builder_schedule() {
         .build()
         .unwrap();
 
-    // Spawn node in background (this registers builder tasks and runs them)
-    tokio::spawn(async move {
-        let _ = node.start().await;
-    });
+    // Start node and keep it alive (dropping it would stop the scheduler)
+    let _running_node = node.start().await.unwrap();
 
     // Wait for task to complete
     tokio::time::sleep(Duration::from_millis(100)).await;
