@@ -1,0 +1,9 @@
+[package]
+name = "three-node-cluster"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+constellation-node = { path = "../../libs/node" }
+constellation-fabric = { path = "../../libs/fabric" }
+tokio = { version = "1", features = ["full"] }

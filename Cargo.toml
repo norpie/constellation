@@ -9,7 +9,7 @@ members = [
     # "runtime/*",
 
     # Example services
-    # "examples/*",
+    "examples/*",
 ]
 
 [workspace.package]
