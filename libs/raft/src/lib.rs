@@ -20,4 +20,4 @@ pub use rpc::{
 };
 pub use state::State;
 pub use state_machine::StateMachine;
-pub use storage::{MemoryStorage, RaftStorage};
+pub use storage::{MemoryStorage, RaftStorage, Snapshot};

@@ -3,6 +3,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// Number of log entries after which to trigger snapshot creation
+const SNAPSHOT_THRESHOLD: u64 = 1000;
+
 /// Result of handling a RequestVote response
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElectionResult {
@@ -787,6 +790,218 @@ impl<SM: StateMachine> RaftNode<SM> {
             conflict_term: None,
             conflict_index: None,
         })
+    }
+
+    /// Handle an InstallSnapshot RPC from the leader
+    ///
+    /// Used when follower is too far behind to catch up via AppendEntries
+    /// (the needed log entries have been compacted into a snapshot).
+    ///
+    /// Single-chunk implementation: expects `offset == 0` and `done == true`.
+    pub async fn handle_install_snapshot(
+        &self,
+        request: crate::InstallSnapshotRequest,
+    ) -> Result<crate::InstallSnapshotResponse> {
+        let mut inner = self.inner.write().await;
+
+        let current_term = inner.storage.get_term().await?;
+
+        // Rule 1: Reply immediately if term < currentTerm
+        if request.term < current_term {
+            return Ok(crate::InstallSnapshotResponse { term: current_term });
+        }
+
+        // If RPC contains term >= currentTerm: convert to follower and update term
+        if request.term > current_term {
+            inner.storage.save_term(request.term).await?;
+            inner.storage.save_voted_for(None).await?;
+        }
+        inner.state = State::Follower;
+        inner.current_leader = Some(request.leader_id.clone());
+        inner.votes_received.clear();
+
+        // Single-chunk implementation: we expect the full snapshot
+        // (offset == 0 and done == true)
+        if request.offset != 0 || !request.done {
+            return Err(crate::Error::Internal(
+                "Chunked snapshots not yet supported".to_string(),
+            ));
+        }
+
+        // Create and save snapshot
+        let snapshot = crate::Snapshot {
+            last_included_index: request.last_included_index,
+            last_included_term: request.last_included_term,
+            data: request.data.clone(),
+        };
+        inner.storage.save_snapshot(snapshot).await?;
+
+        // Restore state machine from snapshot
+        inner.state_machine.restore(request.data).await?;
+
+        // Truncate log - discard entries covered by snapshot
+        inner
+            .storage
+            .truncate_log_before(request.last_included_index + 1)
+            .await?;
+
+        // Update indices
+        if request.last_included_index > inner.commit_index {
+            inner.commit_index = request.last_included_index;
+        }
+        if request.last_included_index > inner.last_applied {
+            inner.last_applied = request.last_included_index;
+        }
+
+        Ok(crate::InstallSnapshotResponse {
+            term: request.term,
+        })
+    }
+
+    /// Prepare an InstallSnapshot RPC for sending to a follower
+    ///
+    /// Returns None if no snapshot is available.
+    /// The leader should call this when a follower's `next_index` is at or
+    /// before the snapshot's `last_included_index`.
+    pub async fn prepare_install_snapshot(&self) -> Result<Option<crate::InstallSnapshotRequest>> {
+        let inner = self.inner.read().await;
+
+        // Load snapshot from storage
+        let snapshot = match inner.storage.load_snapshot().await? {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+
+        let term = inner.storage.get_term().await?;
+
+        Ok(Some(crate::InstallSnapshotRequest {
+            term,
+            leader_id: inner.node_id.clone(),
+            last_included_index: snapshot.last_included_index,
+            last_included_term: snapshot.last_included_term,
+            offset: 0,
+            data: snapshot.data,
+            done: true,
+        }))
+    }
+
+    /// Get the last included index of the current snapshot, if any
+    ///
+    /// Used by the heartbeat task to determine whether to send
+    /// InstallSnapshot or AppendEntries.
+    pub async fn snapshot_last_index(&self) -> Result<Option<LogIndex>> {
+        let inner = self.inner.read().await;
+        let snapshot = inner.storage.load_snapshot().await?;
+        Ok(snapshot.map(|s| s.last_included_index))
+    }
+
+    /// Check if we should create a snapshot, and do so if needed
+    ///
+    /// Creates a snapshot when the log has grown beyond SNAPSHOT_THRESHOLD
+    /// entries since the last snapshot.
+    ///
+    /// Only the leader triggers snapshots, but followers also compact
+    /// their log when they receive InstallSnapshot.
+    pub async fn maybe_snapshot(&self) -> Result<()> {
+        let mut inner = self.inner.write().await;
+
+        // Get current state
+        let last_applied = inner.last_applied;
+        let existing_snapshot = inner.storage.load_snapshot().await?;
+        let last_snapshot_index = existing_snapshot
+            .as_ref()
+            .map(|s| s.last_included_index)
+            .unwrap_or(0);
+
+        // Check if we have enough new entries to warrant a snapshot
+        let entries_since_snapshot = last_applied.saturating_sub(last_snapshot_index);
+        if entries_since_snapshot < SNAPSHOT_THRESHOLD {
+            return Ok(());
+        }
+
+        // Get the term at last_applied
+        let last_applied_term = if let Some(entry) = inner.storage.get_entry(last_applied).await? {
+            entry.term
+        } else if let Some(ref s) = existing_snapshot {
+            // If entry not in log, it's at snapshot boundary
+            if last_applied == s.last_included_index {
+                s.last_included_term
+            } else {
+                // Shouldn't happen - last_applied should be in log or at snapshot
+                return Err(Error::Internal(format!(
+                    "Cannot find term for last_applied index {}",
+                    last_applied
+                )));
+            }
+        } else {
+            // No log entry and no snapshot - shouldn't snapshot yet
+            return Ok(());
+        };
+
+        // Create snapshot from state machine
+        let data = inner.state_machine.snapshot().await?;
+
+        let snapshot = crate::Snapshot {
+            last_included_index: last_applied,
+            last_included_term: last_applied_term,
+            data,
+        };
+
+        // Save snapshot
+        inner.storage.save_snapshot(snapshot).await?;
+
+        // Truncate log (keep entries after the snapshot)
+        inner.storage.truncate_log_before(last_applied).await?;
+
+        Ok(())
+    }
+
+    /// Get the next_index for a specific peer
+    ///
+    /// Returns None if peer not found or if this node is not the leader.
+    pub async fn get_next_index(&self, peer_id: &str) -> Option<LogIndex> {
+        let inner = self.inner.read().await;
+        inner.next_index.get(peer_id).copied()
+    }
+
+    /// Update next_index for a peer after successful InstallSnapshot
+    pub async fn update_next_index_after_snapshot(
+        &self,
+        peer_id: &str,
+        snapshot_last_index: LogIndex,
+    ) {
+        let mut inner = self.inner.write().await;
+        if let Some(next_idx) = inner.next_index.get_mut(peer_id) {
+            *next_idx = snapshot_last_index + 1;
+        }
+        if let Some(match_idx) = inner.match_index.get_mut(peer_id) {
+            *match_idx = snapshot_last_index;
+        }
+    }
+
+    /// Restore state from a saved snapshot on startup
+    ///
+    /// Should be called after creating a RaftNode to restore state from
+    /// any previously saved snapshot. If no snapshot exists, this is a no-op.
+    ///
+    /// Returns true if a snapshot was restored, false otherwise.
+    pub async fn restore_from_snapshot(&self) -> Result<bool> {
+        let mut inner = self.inner.write().await;
+
+        // Load snapshot from storage
+        let snapshot = match inner.storage.load_snapshot().await? {
+            Some(s) => s,
+            None => return Ok(false),
+        };
+
+        // Restore state machine
+        inner.state_machine.restore(snapshot.data).await?;
+
+        // Update indices to match snapshot
+        inner.commit_index = snapshot.last_included_index;
+        inner.last_applied = snapshot.last_included_index;
+
+        Ok(true)
     }
 }
 

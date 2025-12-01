@@ -1,7 +1,19 @@
 use crate::{LogEntry, LogIndex, Result, Term};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+/// A snapshot of the state machine at a specific log index
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// The last log index included in this snapshot
+    pub last_included_index: LogIndex,
+    /// The term of the last log entry included in this snapshot
+    pub last_included_term: Term,
+    /// The serialized state machine data
+    pub data: Vec<u8>,
+}
 
 /// Persistent state storage for Raft
 ///
@@ -52,6 +64,24 @@ pub trait RaftStorage: Send + Sync {
     ///
     /// Returns 0 if log is empty.
     async fn last_log_term(&self) -> Result<Term>;
+
+    /// Save a snapshot
+    ///
+    /// The snapshot replaces any previously saved snapshot.
+    /// Must be persisted durably before returning.
+    async fn save_snapshot(&mut self, snapshot: Snapshot) -> Result<()>;
+
+    /// Load the most recent snapshot
+    ///
+    /// Returns None if no snapshot has been saved.
+    async fn load_snapshot(&self) -> Result<Option<Snapshot>>;
+
+    /// Truncate log entries before the given index
+    ///
+    /// Used after snapshotting to discard log entries that are now
+    /// covered by the snapshot. Entries with index < `before_index`
+    /// are removed.
+    async fn truncate_log_before(&mut self, before_index: LogIndex) -> Result<()>;
 }
 
 /// In-memory storage implementation (non-durable)
@@ -68,6 +98,10 @@ struct MemoryStorageInner {
     term: Term,
     voted_for: Option<String>,
     log: Vec<LogEntry>,
+    snapshot: Option<Snapshot>,
+    /// The index offset caused by log truncation after snapshot
+    /// log[0] has index = log_offset + 1
+    log_offset: LogIndex,
 }
 
 impl MemoryStorage {
@@ -78,6 +112,8 @@ impl MemoryStorage {
                 term: 0,
                 voted_for: None,
                 log: Vec::new(),
+                snapshot: None,
+                log_offset: 0,
             })),
         }
     }
@@ -111,8 +147,12 @@ impl RaftStorage for MemoryStorage {
 
     async fn delete_entries_from(&mut self, index: LogIndex) -> Result<()> {
         let mut inner = self.inner.write().await;
-        if index > 0 && index as usize <= inner.log.len() {
-            inner.log.truncate((index - 1) as usize);
+        // Convert absolute index to array index
+        if index > inner.log_offset {
+            let array_idx = (index - inner.log_offset - 1) as usize;
+            if array_idx < inner.log.len() {
+                inner.log.truncate(array_idx);
+            }
         }
         Ok(())
     }
@@ -138,17 +178,63 @@ impl RaftStorage for MemoryStorage {
         }
 
         let inner = self.inner.read().await;
-        Ok(inner.log.get((index - 1) as usize).cloned())
+        // Index must be after the snapshot
+        if index <= inner.log_offset {
+            return Ok(None);
+        }
+        let array_idx = (index - inner.log_offset - 1) as usize;
+        Ok(inner.log.get(array_idx).cloned())
     }
 
     async fn last_log_index(&self) -> Result<LogIndex> {
         let inner = self.inner.read().await;
-        Ok(inner.log.len() as LogIndex)
+        Ok(inner.log_offset + inner.log.len() as LogIndex)
     }
 
     async fn last_log_term(&self) -> Result<Term> {
         let inner = self.inner.read().await;
+        // If log is empty but we have a snapshot, return snapshot's term
+        if inner.log.is_empty() {
+            if let Some(ref snapshot) = inner.snapshot {
+                return Ok(snapshot.last_included_term);
+            }
+        }
         Ok(inner.log.last().map(|e| e.term).unwrap_or(0))
+    }
+
+    async fn save_snapshot(&mut self, snapshot: Snapshot) -> Result<()> {
+        let mut inner = self.inner.write().await;
+        inner.snapshot = Some(snapshot);
+        Ok(())
+    }
+
+    async fn load_snapshot(&self) -> Result<Option<Snapshot>> {
+        let inner = self.inner.read().await;
+        Ok(inner.snapshot.clone())
+    }
+
+    async fn truncate_log_before(&mut self, before_index: LogIndex) -> Result<()> {
+        let mut inner = self.inner.write().await;
+
+        // Can only truncate entries we actually have
+        if before_index <= inner.log_offset {
+            return Ok(());
+        }
+
+        // Calculate how many entries to remove
+        let entries_to_remove = (before_index - inner.log_offset) as usize;
+
+        if entries_to_remove >= inner.log.len() {
+            // Remove all entries
+            inner.log.clear();
+            inner.log_offset = before_index;
+        } else {
+            // Remove first N entries
+            inner.log.drain(0..entries_to_remove);
+            inner.log_offset = before_index;
+        }
+
+        Ok(())
     }
 }
 
