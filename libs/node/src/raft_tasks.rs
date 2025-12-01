@@ -122,7 +122,7 @@ async fn election_timeout_task(ctx: TaskContext) {
         println!("[{}] Sending vote request to {}", node_id, peer_id);
 
         // Send vote request to peer
-        let response = match rpc.call_peer(&peer_id, "_raft.request_vote.v1", &request) {
+        let response = match rpc.call_peer(&peer_id, "_raft.request_vote", &request) {
             Ok(builder) => builder.await,
             Err(e) => {
                 eprintln!(
@@ -216,7 +216,7 @@ async fn heartbeat_task(ctx: TaskContext) {
         };
 
         // Send AppendEntries to peer
-        let response = match rpc.call_peer(&peer_id, "_raft.append_entries.v1", &request) {
+        let response = match rpc.call_peer(&peer_id, "_raft.append_entries", &request) {
             Ok(builder) => builder.await,
             Err(e) => {
                 eprintln!(
