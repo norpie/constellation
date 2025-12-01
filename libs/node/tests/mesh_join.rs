@@ -1,7 +1,7 @@
-// Test built-in mesh join handler
+// Test built-in mesh handlers (join, leave)
 
 use constellation_fabric::codec::{BincodeCodec, Codec};
-use constellation_node::mesh::{AddressGroup, Capabilities, JoinResponse, TransponderData};
+use constellation_node::mesh::{AddressGroup, Capabilities, LeaveRequest, MeshResponse, TransponderData};
 use constellation_node::Node;
 
 #[tokio::test]
@@ -52,20 +52,20 @@ async fn test_mesh_join_handler_not_prefixed_with_service_name() {
 }
 
 #[tokio::test]
-async fn test_join_response_serialization() {
+async fn test_mesh_response_serialization() {
     let codec = BincodeCodec;
 
     // Test Success variant
-    let success = JoinResponse::Success;
+    let success = MeshResponse::Success;
     let bytes = codec.encode(&success).unwrap();
-    let decoded: JoinResponse = codec.decode(&bytes).unwrap();
-    assert!(matches!(decoded, JoinResponse::Success));
+    let decoded: MeshResponse = codec.decode(&bytes).unwrap();
+    assert!(matches!(decoded, MeshResponse::Success));
 
     // Test NotLeader with None
-    let not_leader = JoinResponse::NotLeader { leader: None };
+    let not_leader = MeshResponse::NotLeader { leader: None };
     let bytes = codec.encode(&not_leader).unwrap();
-    let decoded: JoinResponse = codec.decode(&bytes).unwrap();
-    assert!(matches!(decoded, JoinResponse::NotLeader { leader: None }));
+    let decoded: MeshResponse = codec.decode(&bytes).unwrap();
+    assert!(matches!(decoded, MeshResponse::NotLeader { leader: None }));
 
     // Test NotLeader with Some leader data
     let leader_data = TransponderData::builder()
@@ -76,16 +76,53 @@ async fn test_join_response_serialization() {
         .capabilities(Capabilities::basic())
         .build();
 
-    let not_leader_with_data = JoinResponse::NotLeader {
+    let not_leader_with_data = MeshResponse::NotLeader {
         leader: Some(leader_data),
     };
     let bytes = codec.encode(&not_leader_with_data).unwrap();
-    let decoded: JoinResponse = codec.decode(&bytes).unwrap();
+    let decoded: MeshResponse = codec.decode(&bytes).unwrap();
 
     match decoded {
-        JoinResponse::NotLeader { leader: Some(data) } => {
+        MeshResponse::NotLeader { leader: Some(data) } => {
             assert_eq!(data.node_id, "leader-node");
         }
         _ => panic!("Expected NotLeader with leader data"),
     }
+}
+
+#[tokio::test]
+async fn test_mesh_leave_handler_registered() {
+    // Build a node
+    let _node = Node::builder()
+        .service_name("TestService")
+        .id("test-node")
+        .auto_discover(true)
+        .build()
+        .unwrap();
+
+    // Verify the handler is registered via inventory
+    let mut found_mesh_leave = false;
+
+    for registration in inventory::iter::<constellation_node::handler::HandlerRegistration> {
+        if let Some(route) = registration.route {
+            if route == "_mesh.leave" {
+                found_mesh_leave = true;
+            }
+        }
+    }
+
+    assert!(found_mesh_leave, "_mesh.leave handler should be registered");
+}
+
+#[tokio::test]
+async fn test_leave_request_serialization() {
+    let codec = BincodeCodec;
+
+    let request = LeaveRequest {
+        node_id: "node-to-leave".to_string(),
+    };
+    let bytes = codec.encode(&request).unwrap();
+    let decoded: LeaveRequest = codec.decode(&bytes).unwrap();
+
+    assert_eq!(decoded.node_id, "node-to-leave");
 }
