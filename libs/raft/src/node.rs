@@ -253,6 +253,9 @@ impl<SM: StateMachine> RaftNode<SM> {
     /// Increments the term, votes for self, and transitions to candidate state.
     /// This should be called when the election timeout fires and this node can lead.
     ///
+    /// For single-node clusters (no peers), this will immediately become leader
+    /// since voting for self is already a majority.
+    ///
     /// Returns an error if `can_lead` is false.
     pub async fn start_election(&self) -> Result<()> {
         let mut inner = self.inner.write().await;
@@ -272,7 +275,27 @@ impl<SM: StateMachine> RaftNode<SM> {
 
         inner.state = State::Candidate;
         inner.votes_received.clear();
-        inner.votes_received.insert(node_id);
+        inner.votes_received.insert(node_id.clone());
+
+        // Check if we already have majority (single-node cluster case)
+        let cluster_size = inner.peers.len() + 1;
+        let majority = Self::calculate_majority(cluster_size);
+        if inner.votes_received.len() >= majority {
+            // We won immediately (single-node cluster)
+            inner.state = State::Leader;
+            inner.current_leader = Some(node_id);
+
+            // Initialize leader volatile state
+            let last_log_index = inner.storage.last_log_index().await?;
+            inner.next_index.clear();
+            inner.match_index.clear();
+
+            let peers = inner.peers.clone();
+            for peer in peers {
+                inner.next_index.insert(peer.clone(), last_log_index + 1);
+                inner.match_index.insert(peer, 0);
+            }
+        }
 
         Ok(())
     }

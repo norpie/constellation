@@ -802,6 +802,10 @@ async fn bootstrap_join(
         let command = crate::mesh::AddressBookCommand::Join(self_data.clone());
         raft.apply_to_state_machine(command).await?;
         println!("[bootstrap_join] First node added self to AddressBook");
+
+        // Become leader immediately (single-node cluster)
+        raft.start_election().await?;
+        println!("[bootstrap_join] First node became leader");
         return Ok(());
     }
 
