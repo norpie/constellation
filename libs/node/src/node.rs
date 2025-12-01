@@ -49,8 +49,9 @@ pub struct Node {
     data: Arc<HashMap<TypeId, Box<dyn Any + Send + Sync>>>,
     routes: Arc<HashMap<String, &'static dyn Handler>>,
     listeners: Vec<(Box<dyn ListenerHandle>, String)>,
+    advertise_addresses: Vec<crate::mesh::AddressGroup>,
     raft: constellation_raft::RaftNode<crate::mesh::AddressBook>,
-    bootstrap_peers: Arc<HashMap<String, crate::mesh::AddressGroup>>, // node_id -> address, used before address book is populated
+    bootstrap_peers: Vec<(String, crate::mesh::AddressGroup)>, // consumed during startup
     // Scheduler fields
     scheduler_rx: Option<mpsc::Receiver<SchedulerCommand>>,
     scheduler_tx: mpsc::Sender<SchedulerCommand>,
@@ -94,15 +95,22 @@ impl Node {
 
     /// Start the node runtime
     ///
-    /// Spawns listener tasks for all configured transports, starts the scheduler,
-    /// and begins accepting incoming RPC requests. This method runs until a shutdown
-    /// signal is received (Ctrl+C).
+    /// Spawns listener tasks for all configured transports, joins the cluster
+    /// (or forms a new one), starts Raft consensus tasks, and begins accepting
+    /// incoming RPC requests. This method runs until a shutdown signal is received (Ctrl+C).
+    ///
+    /// # Startup Sequence
+    /// 1. Start transport listeners (accept connections)
+    /// 2. Start scheduler loop (user tasks only)
+    /// 3. Bootstrap: join existing cluster or form new one
+    /// 4. Start Raft tasks (election, heartbeat, apply)
+    /// 5. Wait for shutdown signal
     ///
     /// # Example
     /// ```ignore
     /// let node = Node::builder()
     ///     .service_name("MyService")
-    ///     .listen(tcp_listener, "default")
+    ///     .listen(tcp_listener, "default", "tcp", "192.168.1.10:8080")
     ///     .build()?;
     ///
     /// node.start().await?; // Runs forever
@@ -112,13 +120,19 @@ impl Node {
         let listeners = std::mem::take(&mut self.listeners);
         let scheduler_rx = self.scheduler_rx.take();
         let initial_tasks = std::mem::take(&mut self.initial_tasks);
+        let bootstrap_peers = std::mem::take(&mut self.bootstrap_peers);
+        let advertise_addresses = std::mem::take(&mut self.advertise_addresses);
         let data = Arc::clone(&self.data);
+        let routes = Arc::clone(&self.routes);
         let shutdown_tx = self.shutdown_tx.clone();
         let scheduler_tx = self.scheduler_tx.clone();
+        let node_id = self.node_id.clone();
+        let can_lead = self.can_lead;
+        let raft = self.raft.clone();
 
         let node = Arc::new(self);
 
-        // Spawn a task for each listener
+        // 1. Spawn listener tasks (accept connections)
         for (listener, zone) in listeners {
             let node_clone = Arc::clone(&node);
 
@@ -142,7 +156,7 @@ impl Node {
             });
         }
 
-        // Spawn scheduler loop
+        // 2. Spawn scheduler loop (but don't schedule Raft tasks yet)
         if let Some(scheduler_rx) = scheduler_rx {
             let shutdown_rx = shutdown_tx.subscribe();
             let scheduler_tx_clone = scheduler_tx.clone();
@@ -157,7 +171,7 @@ impl Node {
                 .await;
             });
 
-            // Register initial tasks (from builder)
+            // Register initial user tasks (from builder)
             for task_config in initial_tasks {
                 let id = crate::scheduler::TaskId::new();
                 let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
@@ -173,15 +187,19 @@ impl Node {
                     })
                     .await;
             }
-
-            // Schedule Raft background tasks (election timeout + heartbeat)
-            let scheduler = Scheduler::from_sender(scheduler_tx.clone());
-            if let Err(e) = crate::raft_tasks::schedule_raft_tasks(&scheduler).await {
-                eprintln!("Warning: Failed to schedule Raft tasks: {}", e);
-            }
         }
 
-        // Wait for shutdown signal
+        // 3. Bootstrap: join cluster or form new one
+        let self_data = build_self_transponder_data(&node_id, &advertise_addresses, &routes);
+        bootstrap_join(&bootstrap_peers, &self_data, &raft, can_lead).await?;
+
+        // 4. NOW schedule Raft tasks (we're part of a cluster)
+        let scheduler = Scheduler::from_sender(scheduler_tx.clone());
+        if let Err(e) = crate::raft_tasks::schedule_raft_tasks(&scheduler).await {
+            eprintln!("Warning: Failed to schedule Raft tasks: {}", e);
+        }
+
+        // 5. Wait for shutdown signal
         tokio::signal::ctrl_c()
             .await
             .map_err(|e| Error::Custom(format!("Failed to listen for shutdown signal: {}", e)))?;
@@ -290,6 +308,7 @@ pub struct NodeBuilder {
     routes: HashMap<String, &'static dyn Handler>,
     auto_discover: bool,
     listeners: Vec<(Box<dyn ListenerHandle>, String)>, // (listener, zone)
+    advertise_addresses: Vec<crate::mesh::AddressGroup>, // addresses to advertise in TransponderData
     bootstrap_peers: Vec<(String, crate::mesh::AddressGroup)>, // (node_id, address_group)
     scheduled_tasks: Vec<ScheduledTaskConfig>,
 }
@@ -306,6 +325,7 @@ impl NodeBuilder {
             routes: HashMap::new(),
             auto_discover: true,
             listeners: Vec::new(),
+            advertise_addresses: Vec::new(),
             bootstrap_peers: Vec::new(),
             scheduled_tasks: Vec::new(),
         }
@@ -408,28 +428,46 @@ impl NodeBuilder {
     /// # Arguments
     /// * `listener` - Any type implementing `TransportListener`
     /// * `zone` - Network zone identifier (e.g., "default", "internal", "dc-east")
+    /// * `transport_name` - Transport protocol name (e.g., "tcp", "unix")
+    /// * `advertise_address` - Address to advertise to other nodes (e.g., "192.168.1.10:8080")
     ///
     /// # Example
     /// ```ignore
     /// use constellation_fabric::transport::{TcpTransportListener, UnixTransportListener};
     ///
-    /// let tcp = TcpTransportListener::bind("127.0.0.1:8080".parse()?).await?;
+    /// let tcp = TcpTransportListener::bind("0.0.0.0:8080".parse()?).await?;
     /// let unix = UnixTransportListener::bind("/tmp/service.sock").await?;
     ///
     /// Node::builder()
     ///     .service_name("MyService")
-    ///     .listen(tcp, "default")
-    ///     .listen(unix, "local")
+    ///     .listen(tcp, "default", "tcp", "192.168.1.10:8080")
+    ///     .listen(unix, "local", "unix", "/tmp/service.sock")
     ///     .build()?
     ///     .start().await?;
     /// ```
-    pub fn listen<L>(mut self, listener: L, zone: impl Into<String>) -> Self
+    pub fn listen<L>(
+        mut self,
+        listener: L,
+        zone: impl Into<String>,
+        transport_name: impl Into<String>,
+        advertise_address: impl Into<String>,
+    ) -> Self
     where
         L: TransportListener + Send + Sync + 'static,
         L::Transport: Transport + Send + Sync + 'static,
     {
+        let zone = zone.into();
+
+        // Store advertise address for TransponderData
+        self.advertise_addresses.push(crate::mesh::AddressGroup {
+            zone: zone.clone(),
+            transport: transport_name.into(),
+            addresses: vec![advertise_address.into()],
+        });
+
+        // Wrap and store listener
         let wrapped = ListenerWrapper(listener);
-        self.listeners.push((Box::new(wrapped), zone.into()));
+        self.listeners.push((Box::new(wrapped), zone));
         self
     }
 
@@ -576,10 +614,12 @@ impl NodeBuilder {
             .node_id
             .unwrap_or_else(|| format!("{}_{}", service_name, uuid::Uuid::new_v4()));
 
-        // Extract peer IDs and create bootstrap address map
-        let peer_ids: Vec<String> = self.bootstrap_peers.iter().map(|(id, _)| id.clone()).collect();
-        let bootstrap_peer_map: HashMap<String, crate::mesh::AddressGroup> =
-            self.bootstrap_peers.into_iter().collect();
+        // Extract peer IDs for Raft initialization
+        let peer_ids: Vec<String> = self
+            .bootstrap_peers
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect();
 
         // Create Raft node with peer IDs
         let raft = constellation_raft::RaftNode::builder()
@@ -635,8 +675,9 @@ impl NodeBuilder {
             data: Arc::new(data),
             routes: Arc::new(routes),
             listeners: self.listeners,
+            advertise_addresses: self.advertise_addresses,
             raft,
-            bootstrap_peers: Arc::new(bootstrap_peer_map),
+            bootstrap_peers: self.bootstrap_peers,
             scheduler_rx: Some(scheduler_rx),
             scheduler_tx,
             shutdown_tx,
@@ -649,4 +690,107 @@ impl Default for NodeBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Build TransponderData for this node
+fn build_self_transponder_data(
+    node_id: &str,
+    advertise_addresses: &[crate::mesh::AddressGroup],
+    routes: &HashMap<String, &'static dyn crate::handler::Handler>,
+) -> crate::mesh::TransponderData {
+    let route_names: Vec<String> = routes.keys().cloned().collect();
+
+    // Collect unique transports
+    let transports: Vec<String> = advertise_addresses
+        .iter()
+        .map(|a| a.transport.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    crate::mesh::TransponderData::builder()
+        .node_id(node_id)
+        .addresses(advertise_addresses.to_vec())
+        .transports(transports)
+        .codec("bincode") // Currently hardcoded
+        .routes(route_names)
+        .capabilities(crate::mesh::Capabilities::basic())
+        .build()
+}
+
+/// Attempt to join the cluster via bootstrap peers
+///
+/// Returns Ok(()) if successfully joined or formed new cluster.
+/// Returns Err if unable to join and unable to form new cluster.
+async fn bootstrap_join(
+    bootstrap_peers: &[(String, crate::mesh::AddressGroup)],
+    self_data: &crate::mesh::TransponderData,
+    raft: &constellation_raft::RaftNode<crate::mesh::AddressBook>,
+    can_lead: bool,
+) -> Result<()> {
+    use constellation_fabric::codec::Codec;
+
+    // If no bootstrap peers, we're forming a new cluster
+    if bootstrap_peers.is_empty() {
+        if !can_lead {
+            return Err(Error::Custom(
+                "Cannot start: no bootstrap peers and can_lead=false".to_string(),
+            ));
+        }
+        // Add self to AddressBook via Raft (we're the first node/leader)
+        let command = crate::mesh::AddressBookCommand::Join(self_data.clone());
+        let bytes = constellation_fabric::codec::BincodeCodec
+            .encode(&command)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
+        raft.submit_command(bytes).await?;
+        return Ok(());
+    }
+
+    // Try bootstrap peers sequentially
+    for (_peer_id, address_group) in bootstrap_peers {
+        // Get first address from group
+        let Some(address) = address_group.addresses.first() else {
+            continue;
+        };
+
+        // Attempt join
+        match try_join(address, self_data).await {
+            Ok(crate::mesh::MeshResponse::Success) => return Ok(()),
+            Ok(crate::mesh::MeshResponse::NotLeader {
+                leader: Some(leader_data),
+            }) => {
+                // Got redirected to leader, try that
+                if let Some(leader_addr) = leader_data
+                    .addresses
+                    .first()
+                    .and_then(|g| g.addresses.first())
+                {
+                    if let Ok(crate::mesh::MeshResponse::Success) =
+                        try_join(leader_addr, self_data).await
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+            Ok(crate::mesh::MeshResponse::NotLeader { leader: None }) => {
+                // No leader known, try next bootstrap peer
+                continue;
+            }
+            Err(_) => {
+                // Connection failed, try next bootstrap peer
+                continue;
+            }
+        }
+    }
+
+    Err(Error::Custom(
+        "Failed to join cluster via any bootstrap peer".to_string(),
+    ))
+}
+
+async fn try_join(
+    address: &str,
+    self_data: &crate::mesh::TransponderData,
+) -> Result<crate::mesh::MeshResponse> {
+    crate::rpc::send_direct(address, "_mesh.join", self_data).await
 }

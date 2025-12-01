@@ -369,6 +369,58 @@ where
     }
 }
 
+/// Send an RPC request directly to an address (bypasses Router)
+///
+/// Used for bootstrap connections before AddressBook is populated.
+/// This is a standalone function rather than a method on RpcClient because
+/// it doesn't need any of RpcClient's infrastructure (Router, etc).
+pub async fn send_direct<Req, Resp>(address: &str, route: &str, request: &Req) -> crate::Result<Resp>
+where
+    Req: serde::Serialize,
+    Resp: DeserializeOwned,
+{
+    // Parse address
+    let addr: std::net::SocketAddr = address
+        .parse()
+        .map_err(|e| crate::Error::Custom(format!("Invalid address '{}': {}", address, e)))?;
+
+    // Connect directly
+    let mut transport = constellation_fabric::transport::TcpTransport::connect(addr).await?;
+
+    // Build and send frame
+    let codec = constellation_fabric::codec::BincodeCodec;
+    let payload = constellation_fabric::codec::Codec::encode(&codec, request)
+        .map_err(|e| crate::Error::Serialization(e.to_string()))?;
+    let header = RpcHeader {
+        request_id: Uuid::new_v4(),
+        route: route.to_string(),
+    };
+    let frame = pack_frame(&header, &payload)?;
+
+    use constellation_fabric::transport::Transport;
+    transport.send(&frame).await?;
+
+    // Receive and parse response
+    let response_frame = transport.receive().await?;
+    let (_header, response_payload) = parse_frame(&response_frame)?;
+    let response: RpcResponse = constellation_fabric::codec::Codec::decode(&codec, response_payload)
+        .map_err(|e| crate::Error::Serialization(e.to_string()))?;
+
+    // Handle result
+    match response.result {
+        ResponseResult::Success(payload) => {
+            constellation_fabric::codec::Codec::decode(&codec, &payload)
+                .map_err(|e| crate::Error::Serialization(e.to_string()))
+        }
+        ResponseResult::Error { category, payload } => {
+            let error_msg: String =
+                constellation_fabric::codec::Codec::decode(&codec, &payload)
+                    .unwrap_or_else(|_| format!("RPC error (category: {:?})", category));
+            Err(crate::Error::Rpc(error_msg))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
