@@ -93,8 +93,19 @@ async fn election_timeout_task(ctx: TaskContext) {
         }
     };
 
+    // Get peers from AddressBook (source of truth for cluster membership)
+    let self_id = raft.node_id().await;
+    let peers: Vec<String> = raft
+        .with_state_machine(|ab| {
+            ab.all_nodes()
+                .keys()
+                .filter(|id| *id != &self_id)
+                .cloned()
+                .collect()
+        })
+        .await;
+
     // Send vote requests to all peers
-    let peers = raft.peers().await;
     for peer_id in peers {
         // Send vote request to peer
         let response = match rpc.call_peer(&peer_id, "_raft.request_vote.v1", &request) {
@@ -163,8 +174,19 @@ async fn heartbeat_task(ctx: TaskContext) {
         return;
     }
 
+    // Get peers from AddressBook (source of truth for cluster membership)
+    let self_id = raft.node_id().await;
+    let peers: Vec<String> = raft
+        .with_state_machine(|ab| {
+            ab.all_nodes()
+                .keys()
+                .filter(|id| *id != &self_id)
+                .cloned()
+                .collect()
+        })
+        .await;
+
     // Send heartbeats to all peers
-    let peers = raft.peers().await;
     for peer_id in peers {
         // Prepare AppendEntries for this peer
         let request = match raft.prepare_append_entries(&peer_id).await {

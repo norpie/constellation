@@ -1,9 +1,10 @@
 // Built-in handlers for framework-internal RPC
 
 use crate::handler;
-use crate::mesh::AddressBook;
+use crate::mesh::{AddressBook, AddressBookCommand, JoinResponse, TransponderData};
 use crate::scheduler::Scheduler;
 use crate::Data;
+use constellation_fabric::codec::BincodeCodec;
 use constellation_raft::{
     AppendEntriesRequest, AppendEntriesResponse, RaftNode, RequestVoteRequest, RequestVoteResponse,
 };
@@ -43,4 +44,41 @@ async fn append_entries(
     }
 
     Ok(resp)
+}
+
+/// Built-in handler for mesh join requests
+///
+/// Allows new nodes to join the cluster. If this node is the leader,
+/// it submits a Join command to Raft. Otherwise, it returns information
+/// about the current leader so the client can retry there.
+#[handler(route = "_mesh.join")]
+async fn mesh_join(
+    req: TransponderData,
+    raft: Data<RaftNode<AddressBook>>,
+) -> Result<JoinResponse, crate::error::Error> {
+    // Check if we're the leader
+    if !raft.is_leader().await {
+        // Get leader info from AddressBook if we know who it is
+        let leader_id = raft.current_leader().await;
+        let leader_data = match leader_id {
+            Some(id) => raft
+                .with_state_machine(|ab| ab.get_node(&id).cloned())
+                .await,
+            None => None,
+        };
+        return Ok(JoinResponse::NotLeader { leader: leader_data });
+    }
+
+    // Serialize the Join command
+    let command = AddressBookCommand::Join(req);
+    let bytes = BincodeCodec
+        .encode(&command)
+        .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
+
+    // Submit to Raft
+    raft.submit_command(bytes)
+        .await
+        .map_err(crate::error::Error::from)?;
+
+    Ok(JoinResponse::Success)
 }
