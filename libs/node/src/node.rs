@@ -728,8 +728,6 @@ async fn bootstrap_join(
     raft: &constellation_raft::RaftNode<crate::mesh::AddressBook>,
     can_lead: bool,
 ) -> Result<()> {
-    use constellation_fabric::codec::Codec;
-
     // If no bootstrap peers, we're forming a new cluster
     if bootstrap_peers.is_empty() {
         if !can_lead {
@@ -737,12 +735,10 @@ async fn bootstrap_join(
                 "Cannot start: no bootstrap peers and can_lead=false".to_string(),
             ));
         }
-        // Add self to AddressBook via Raft (we're the first node/leader)
+        // First node: apply directly to state machine (consensus of one is just us deciding)
+        // We bypass the Raft log since there's no one to replicate to anyway.
         let command = crate::mesh::AddressBookCommand::Join(self_data.clone());
-        let bytes = constellation_fabric::codec::BincodeCodec
-            .encode(&command)
-            .map_err(|e| Error::Serialization(e.to_string()))?;
-        raft.submit_command(bytes).await?;
+        raft.apply_to_state_machine(command).await?;
         return Ok(());
     }
 
