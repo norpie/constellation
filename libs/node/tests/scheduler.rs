@@ -286,9 +286,9 @@ async fn test_task_list() {
         .unwrap();
 
     // List all tasks
-    // Note: 2 raft tasks (election_timeout, leader_heartbeat) are auto-scheduled
+    // Note: 3 raft tasks (election_timeout, leader_heartbeat, apply_committed) are auto-scheduled
     let tasks = scheduler.list().await;
-    assert_eq!(tasks.len(), 5); // 3 test tasks + 2 raft tasks
+    assert_eq!(tasks.len(), 6); // 3 test tasks + 3 raft tasks
 
     // Check named tasks are present
     let names: Vec<_> = tasks.iter().filter_map(|t| t.name.as_ref()).collect();
@@ -425,9 +425,9 @@ async fn test_task_schedules_task() {
     // Child task should have run
     assert_eq!(counter.load(Ordering::SeqCst), 1);
 
-    // Should now have 4 tasks: 2 test tasks + 2 raft tasks (election_timeout, leader_heartbeat)
+    // Should now have 5 tasks: 2 test tasks + 3 raft tasks (election_timeout, leader_heartbeat, apply_committed)
     let tasks = scheduler.list().await;
-    assert_eq!(tasks.len(), 4);
+    assert_eq!(tasks.len(), 5);
 }
 
 #[tokio::test]
