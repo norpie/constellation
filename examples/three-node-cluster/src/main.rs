@@ -1,7 +1,8 @@
-//! Minimal 3-node cluster example
+//! Minimal 3-node cluster example with leader failover
 //!
 //! Node-1 starts first and forms a new cluster (no bootstrap peers).
 //! Node-2 and Node-3 join by connecting to Node-1.
+//! Then node-1 is killed to test leader election.
 
 use constellation_fabric::transport::TcpTransportListener;
 use constellation_node::mesh::AddressGroup;
@@ -14,12 +15,12 @@ const NODE3_ADDR: &str = "127.0.0.1:9003";
 
 #[tokio::main]
 async fn main() {
-    println!("Starting 3-node cluster...\n");
+    println!("=== Starting 3-node cluster ===\n");
 
     // Node-1 starts first with NO bootstrap peers (forms new cluster)
     let h1 = tokio::spawn(run_node("node-1", NODE1_ADDR, vec![]));
 
-    // Give node-1 time to start and become leader (election timeout is 150-300ms)
+    // Give node-1 time to start and become leader
     println!("Waiting for node-1 to become leader...");
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
@@ -27,12 +28,23 @@ async fn main() {
     let h2 = tokio::spawn(run_node("node-2", NODE2_ADDR, vec![NODE1_ADDR]));
     let h3 = tokio::spawn(run_node("node-3", NODE3_ADDR, vec![NODE1_ADDR]));
 
-    // Let them run for a bit
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    // Let cluster stabilize
+    println!("\nWaiting 2 seconds for cluster to stabilize...");
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
-    println!("\n--- 10 seconds elapsed, shutting down ---");
-
+    // Kill the leader
+    println!("\n=== KILLING NODE-1 (the leader) ===\n");
     h1.abort();
+
+    // Wait for election timeout (150-300ms) + some buffer
+    println!("Waiting for new leader election (election timeout is 150-300ms)...");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Let it run a bit more to see heartbeats
+    println!("\nCluster running with 2 nodes for 5 more seconds...");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    println!("\n=== Shutting down ===");
     h2.abort();
     h3.abort();
 }
