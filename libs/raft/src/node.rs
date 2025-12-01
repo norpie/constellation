@@ -1,5 +1,4 @@
 use crate::{Error, LogIndex, RaftStorage, Result, State, StateMachine, Term};
-use constellation_fabric::codec::BincodeCodec;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -43,7 +42,6 @@ struct RaftNodeInner<SM: StateMachine> {
     // Storage and state machine
     storage: Box<dyn RaftStorage>,
     state_machine: SM,
-    codec: BincodeCodec,
 
     // Volatile state (all servers)
     state: State,
@@ -135,6 +133,53 @@ impl<SM: StateMachine> RaftNode<SM> {
     {
         let inner = self.inner.read().await;
         f(&inner.state_machine)
+    }
+
+    /// Get entries that are committed but not yet applied
+    ///
+    /// Returns log entries from `last_applied + 1` to `commit_index`.
+    /// The caller is responsible for deserializing and applying these entries,
+    /// then calling `mark_applied()` to update `last_applied`.
+    ///
+    /// This keeps the raft crate codec-agnostic - it just stores raw bytes.
+    pub async fn get_unapplied_entries(&self) -> Result<Vec<crate::LogEntry>> {
+        let inner = self.inner.read().await;
+
+        let mut entries = Vec::new();
+        for index in (inner.last_applied + 1)..=inner.commit_index {
+            if let Some(entry) = inner.storage.get_entry(index).await? {
+                entries.push(entry);
+            }
+        }
+
+        Ok(entries)
+    }
+
+    /// Mark entries as applied up to the given index
+    ///
+    /// This should be called after the caller has successfully applied
+    /// entries returned by `get_unapplied_entries()`.
+    pub async fn mark_applied(&self, up_to_index: LogIndex) -> Result<()> {
+        let mut inner = self.inner.write().await;
+
+        // Safety check: can't mark as applied beyond commit_index
+        if up_to_index > inner.commit_index {
+            return Err(Error::Internal(format!(
+                "Cannot mark index {} as applied - only committed up to {}",
+                up_to_index, inner.commit_index
+            )));
+        }
+
+        // Safety check: can't go backwards
+        if up_to_index < inner.last_applied {
+            return Err(Error::Internal(format!(
+                "Cannot mark index {} as applied - already applied up to {}",
+                up_to_index, inner.last_applied
+            )));
+        }
+
+        inner.last_applied = up_to_index;
+        Ok(())
     }
 
     // State transition methods
@@ -764,7 +809,6 @@ impl<SM: StateMachine> RaftNodeBuilder<SM> {
             peers: self.peers,
             storage,
             state_machine,
-            codec: BincodeCodec,
             state: State::Follower,
             commit_index: 0,
             last_applied: 0,
@@ -1329,5 +1373,77 @@ mod tests {
         let entry2 = inner.storage.get_entry(2).await.unwrap().unwrap();
         assert_eq!(entry2.term, 3);
         assert_eq!(entry2.command, vec![2]);
+    }
+
+    #[tokio::test]
+    async fn test_get_unapplied_entries_and_mark_applied() {
+        // Create log entries with raw bytes (raft doesn't care about encoding)
+        let mut storage = MemoryStorage::new();
+        storage
+            .append_entries(vec![
+                crate::LogEntry::new(1, vec![1]),
+                crate::LogEntry::new(1, vec![2]),
+                crate::LogEntry::new(1, vec![3]),
+            ])
+            .await
+            .unwrap();
+
+        let node = RaftNode::builder()
+            .node_id("node-1")
+            .storage(storage)
+            .state_machine(TestStateMachine)
+            .build()
+            .unwrap();
+
+        // Initially nothing is committed or applied
+        assert_eq!(node.commit_index().await, 0);
+        assert_eq!(node.last_applied().await, 0);
+
+        // No unapplied entries when nothing is committed
+        let entries = node.get_unapplied_entries().await.unwrap();
+        assert!(entries.is_empty());
+
+        // Simulate receiving AppendEntries that commits entries 1 and 2
+        let request = crate::AppendEntriesRequest {
+            term: 1,
+            leader_id: "leader".to_string(),
+            prev_log_index: 3,
+            prev_log_term: 1,
+            entries: vec![],
+            leader_commit: 2,
+        };
+        node.handle_append_entries(request).await.unwrap();
+        assert_eq!(node.commit_index().await, 2);
+
+        // Now we should have 2 unapplied entries
+        let entries = node.get_unapplied_entries().await.unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].command, vec![1]);
+        assert_eq!(entries[1].command, vec![2]);
+
+        // Mark first entry as applied
+        node.mark_applied(1).await.unwrap();
+        assert_eq!(node.last_applied().await, 1);
+
+        // Now only 1 unapplied entry
+        let entries = node.get_unapplied_entries().await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].command, vec![2]);
+
+        // Mark second entry as applied
+        node.mark_applied(2).await.unwrap();
+        assert_eq!(node.last_applied().await, 2);
+
+        // No more unapplied entries
+        let entries = node.get_unapplied_entries().await.unwrap();
+        assert!(entries.is_empty());
+
+        // Can't mark beyond commit_index
+        let result = node.mark_applied(3).await;
+        assert!(result.is_err());
+
+        // Can't go backwards
+        let result = node.mark_applied(1).await;
+        assert!(result.is_err());
     }
 }
