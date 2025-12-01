@@ -43,6 +43,9 @@ pub enum Error {
 
     #[error("RPC error: {0}")]
     Rpc(String),
+
+    #[error("Timeout: {0}")]
+    Timeout(String),
 }
 
 impl From<std::io::Error> for Error {
@@ -76,6 +79,8 @@ impl crate::rpc::ErrorResponder for Error {
             Error::Serialization(_) | Error::RouteNotFound(_) => {
                 crate::rpc::ErrorCategory::ClientError
             }
+            // Timeout - don't retry (already timed out)
+            Error::Timeout(_) => crate::rpc::ErrorCategory::Timeout,
             // Server errors - internal issues, may retry
             Error::Io(_)
             | Error::Fabric(_)

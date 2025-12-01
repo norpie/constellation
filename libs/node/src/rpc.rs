@@ -19,8 +19,55 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
+
+/// Default maximum retry attempts
+const DEFAULT_MAX_ATTEMPTS: u32 = 3;
+
+/// Default timeout per attempt
+const DEFAULT_TIMEOUT_PER_ATTEMPT: Duration = Duration::from_secs(5);
+
+/// Default initial backoff delay
+const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
+
+/// Backoff strategy for retries
+#[derive(Debug, Clone)]
+pub enum BackoffStrategy {
+    /// Fixed delay between retries
+    Fixed(Duration),
+    /// Exponential backoff: initial * 2^attempt, capped at max
+    Exponential {
+        initial: Duration,
+        max: Duration,
+    },
+    /// No delay between retries
+    None,
+}
+
+impl Default for BackoffStrategy {
+    fn default() -> Self {
+        BackoffStrategy::Exponential {
+            initial: DEFAULT_INITIAL_BACKOFF,
+            max: Duration::from_secs(5),
+        }
+    }
+}
+
+impl BackoffStrategy {
+    /// Calculate delay for the given attempt number (0-indexed)
+    pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
+        match self {
+            BackoffStrategy::Fixed(d) => *d,
+            BackoffStrategy::Exponential { initial, max } => {
+                let multiplier = 2u32.saturating_pow(attempt);
+                let delay = initial.saturating_mul(multiplier);
+                delay.min(*max)
+            }
+            BackoffStrategy::None => Duration::ZERO,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcRequest {
@@ -258,11 +305,10 @@ pub struct RpcCallBuilder<Resp> {
     /// Optional specific peer to call (None = use route resolution)
     peer_id: Option<String>,
     payload: Vec<u8>,
-    max_attempts: Option<u32>,
-    timeout_per_attempt: Option<Duration>,
+    max_attempts: u32,
+    timeout_per_attempt: Duration,
     total_timeout: Option<Duration>,
-    // Future: backoff strategy
-    // backoff: Option<BackoffStrategy>,
+    backoff: BackoffStrategy,
     _phantom: PhantomData<Resp>,
 }
 
@@ -276,33 +322,51 @@ where
             route,
             peer_id,
             payload,
-            max_attempts: None,
-            timeout_per_attempt: None,
+            max_attempts: DEFAULT_MAX_ATTEMPTS,
+            timeout_per_attempt: DEFAULT_TIMEOUT_PER_ATTEMPT,
             total_timeout: None,
+            backoff: BackoffStrategy::default(),
             _phantom: PhantomData,
         }
     }
 
-    /// Set maximum number of retry attempts
+    /// Set maximum number of retry attempts (default: 3)
     pub fn max_attempts(mut self, n: u32) -> Self {
-        self.max_attempts = Some(n);
+        self.max_attempts = n;
         self
     }
 
-    /// Set timeout for each individual attempt
+    /// Disable retries (equivalent to max_attempts(1))
+    pub fn no_retry(mut self) -> Self {
+        self.max_attempts = 1;
+        self
+    }
+
+    /// Set timeout for each individual attempt (default: 5s)
     pub fn timeout_per_attempt(mut self, duration: Duration) -> Self {
-        self.timeout_per_attempt = Some(duration);
+        self.timeout_per_attempt = duration;
         self
     }
 
-    /// Set total timeout across all attempts
+    /// Set total timeout across all attempts (default: no limit)
     pub fn total_timeout(mut self, duration: Duration) -> Self {
         self.total_timeout = Some(duration);
         self
     }
 
-    // Future: backoff strategy configuration
-    // pub fn backoff(mut self, strategy: BackoffStrategy) -> Self { ... }
+    /// Set backoff strategy between retries (default: exponential 100ms-5s)
+    pub fn backoff(mut self, strategy: BackoffStrategy) -> Self {
+        self.backoff = strategy;
+        self
+    }
+}
+
+/// Categorized error for retry decisions
+enum AttemptError {
+    /// Error is retryable (connection failed, timeout, server returned Retryable)
+    Retryable(crate::Error),
+    /// Error is not retryable (client error, serialization, etc.)
+    Fatal(crate::Error),
 }
 
 impl<Resp> std::future::IntoFuture for RpcCallBuilder<Resp>
@@ -314,58 +378,156 @@ where
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
-            // 1. Resolve target using Router
-            let target = match &self.peer_id {
-                Some(peer_id) => self.client.router.resolve_peer(peer_id).await?,
-                None => self.client.router.resolve_route(&self.route).await?,
-            };
+            let start = Instant::now();
+            let mut last_error: Option<crate::Error> = None;
 
-            // 2. Connect to target
-            // TODO: Dynamic transport selection based on target.transport
-            // For now, we only support TCP
-            let addr: std::net::SocketAddr = target
-                .address
-                .parse()
-                .map_err(|e| crate::Error::Custom(format!("Invalid address '{}': {}", target.address, e)))?;
-
-            let mut transport = constellation_fabric::transport::TcpTransport::connect(addr).await?;
-
-            // 3. Build and send RPC frame
-            let header = RpcHeader {
-                request_id: Uuid::new_v4(),
-                route: self.route.clone(),
-            };
-            let frame = pack_frame(&header, &self.payload)?;
-
-            use constellation_fabric::transport::Transport;
-            transport.send(&frame).await?;
-
-            // 4. Receive response
-            let response_frame = transport.receive().await?;
-
-            // 5. Parse response frame (header + payload)
-            let (_response_header, response_payload) = parse_frame(&response_frame)?;
-
-            // 6. Deserialize RpcResponse from payload
-            let codec = constellation_fabric::codec::BincodeCodec;
-            let response: RpcResponse = constellation_fabric::codec::Codec::decode(&codec, response_payload)
-                .map_err(|e| crate::Error::Serialization(e.to_string()))?;
-
-            // 6. Handle response result
-            match response.result {
-                ResponseResult::Success(payload) => {
-                    let result: Resp = constellation_fabric::codec::Codec::decode(&codec, &payload)
-                        .map_err(|e| crate::Error::Serialization(e.to_string()))?;
-                    Ok(result)
+            for attempt in 0..self.max_attempts {
+                // Check total timeout before attempting
+                if let Some(total) = self.total_timeout {
+                    if start.elapsed() >= total {
+                        return Err(last_error.unwrap_or_else(|| {
+                            crate::Error::Timeout("Total timeout exceeded".to_string())
+                        }));
+                    }
                 }
-                ResponseResult::Error { category, payload } => {
-                    // Try to deserialize error message, fall back to raw bytes description
-                    let error_msg: String = constellation_fabric::codec::Codec::decode(&codec, &payload)
-                        .unwrap_or_else(|_| format!("RPC error (category: {:?})", category));
-                    Err(crate::Error::Rpc(error_msg))
+
+                // Apply backoff delay (skip on first attempt)
+                if attempt > 0 {
+                    let delay = self.backoff.delay_for_attempt(attempt - 1);
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+
+                // Execute attempt with timeout
+                let attempt_future = Self::execute_attempt(
+                    &self.client,
+                    &self.route,
+                    self.peer_id.as_deref(),
+                    &self.payload,
+                );
+
+                let result = tokio::time::timeout(self.timeout_per_attempt, attempt_future).await;
+
+                match result {
+                    Ok(Ok(response)) => return Ok(response),
+                    Ok(Err(AttemptError::Fatal(e))) => return Err(e),
+                    Ok(Err(AttemptError::Retryable(e))) => {
+                        last_error = Some(e);
+                        // Continue to next attempt
+                    }
+                    Err(_timeout) => {
+                        last_error = Some(crate::Error::Timeout(format!(
+                            "Attempt {} timed out after {:?}",
+                            attempt + 1,
+                            self.timeout_per_attempt
+                        )));
+                        // Continue to next attempt
+                    }
                 }
             }
+
+            // All attempts exhausted
+            Err(last_error.unwrap_or_else(|| {
+                crate::Error::Custom("All retry attempts failed".to_string())
+            }))
         })
+    }
+}
+
+impl<Resp> RpcCallBuilder<Resp>
+where
+    Resp: DeserializeOwned,
+{
+    /// Execute a single RPC attempt
+    async fn execute_attempt(
+        client: &RpcClient,
+        route: &str,
+        peer_id: Option<&str>,
+        payload: &[u8],
+    ) -> Result<Resp, AttemptError> {
+        // 1. Resolve target using Router
+        let target = match peer_id {
+            Some(peer_id) => client
+                .router
+                .resolve_peer(peer_id)
+                .await
+                .map_err(|e| AttemptError::Fatal(e.into()))?,
+            None => client
+                .router
+                .resolve_route(route)
+                .await
+                .map_err(|e| AttemptError::Fatal(e.into()))?,
+        };
+
+        // 2. Connect to target (connection errors are retryable)
+        let addr: std::net::SocketAddr = target
+            .address
+            .parse()
+            .map_err(|e| {
+                AttemptError::Fatal(crate::Error::Custom(format!(
+                    "Invalid address '{}': {}",
+                    target.address, e
+                )))
+            })?;
+
+        let mut transport = constellation_fabric::transport::TcpTransport::connect(addr)
+            .await
+            .map_err(|e| AttemptError::Retryable(e.into()))?;
+
+        // 3. Build and send RPC frame
+        let header = RpcHeader {
+            request_id: Uuid::new_v4(),
+            route: route.to_string(),
+        };
+        let frame = pack_frame(&header, payload).map_err(|e| AttemptError::Fatal(e))?;
+
+        use constellation_fabric::transport::Transport;
+        transport
+            .send(&frame)
+            .await
+            .map_err(|e| AttemptError::Retryable(e.into()))?;
+
+        // 4. Receive response (network errors are retryable)
+        let response_frame = transport
+            .receive()
+            .await
+            .map_err(|e| AttemptError::Retryable(e.into()))?;
+
+        // 5. Parse response frame
+        let (_response_header, response_payload) =
+            parse_frame(&response_frame).map_err(|e| AttemptError::Fatal(e))?;
+
+        // 6. Deserialize RpcResponse from payload
+        let codec = constellation_fabric::codec::BincodeCodec;
+        let response: RpcResponse =
+            constellation_fabric::codec::Codec::decode(&codec, response_payload)
+                .map_err(|e| AttemptError::Fatal(crate::Error::Serialization(e.to_string())))?;
+
+        // 7. Handle response result
+        match response.result {
+            ResponseResult::Success(payload) => {
+                let result: Resp = constellation_fabric::codec::Codec::decode(&codec, &payload)
+                    .map_err(|e| AttemptError::Fatal(crate::Error::Serialization(e.to_string())))?;
+                Ok(result)
+            }
+            ResponseResult::Error { category, payload } => {
+                let error_msg: String =
+                    constellation_fabric::codec::Codec::decode(&codec, &payload)
+                        .unwrap_or_else(|_| format!("RPC error (category: {:?})", category));
+                let error = crate::Error::Rpc(error_msg);
+
+                // Determine if error is retryable based on category
+                match category {
+                    ErrorCategory::Retryable | ErrorCategory::Unavailable => {
+                        Err(AttemptError::Retryable(error))
+                    }
+                    ErrorCategory::ClientError
+                    | ErrorCategory::ServerError
+                    | ErrorCategory::Timeout => Err(AttemptError::Fatal(error)),
+                }
+            }
+        }
     }
 }
 

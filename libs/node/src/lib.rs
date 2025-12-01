@@ -18,8 +18,8 @@ pub use codec::{BincodeFactory, CodecFactory, RawCodecFactory, TypedCodec};
 pub use error::{Error, Result};
 pub use node::{Data, Node, NodeBuilder, StartableNode};
 pub use rpc::{
-    ErrorCategory, ErrorResponder, HandlerError, Responder, RpcClient, RpcRequest, RpcResponse,
-    ResponseResult,
+    BackoffStrategy, ErrorCategory, ErrorResponder, HandlerError, Responder, RpcClient,
+    RpcRequest, RpcResponse, ResponseResult,
 };
 pub use router::{ResolvedTarget, Router, RoutingError};
 pub use scheduler::{
