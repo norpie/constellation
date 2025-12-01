@@ -152,7 +152,7 @@ async fn test_handler_call() {
 
     // Call handler
     let handler = &LoginHandler;
-    let response_bytes = handler.call(&node, &request).await.unwrap();
+    let response_bytes = handler.call(node.node(), &request).await.unwrap();
 
     // Decode response
     let response: LoginResponse = codec.decode(&response_bytes).unwrap();

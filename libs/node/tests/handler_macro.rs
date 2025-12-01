@@ -69,7 +69,7 @@ async fn test_handler_macro_basic() {
 
     // Call handler
     let handler = &ECHO_HANDLER;
-    let response_bytes = handler.call(&node, &request).await.unwrap();
+    let response_bytes = handler.call(node.node(), &request).await.unwrap();
 
     // Decode response
     let response: EchoResponse = codec.decode(&response_bytes).unwrap();
@@ -140,7 +140,7 @@ async fn test_handler_with_rpc_client() {
 
     // Call handler - it should be able to extract RpcClient
     let handler = &CALL_OTHER_SERVICE_HANDLER;
-    let response_bytes = handler.call(&node, &request).await.unwrap();
+    let response_bytes = handler.call(node.node(), &request).await.unwrap();
 
     // Decode response
     let response: CallOtherServiceResponse = codec.decode(&response_bytes).unwrap();
