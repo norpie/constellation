@@ -19,8 +19,9 @@ async fn main() {
     // Node-1 starts first with NO bootstrap peers (forms new cluster)
     let h1 = tokio::spawn(run_node("node-1", NODE1_ADDR, vec![]));
 
-    // Give node-1 time to start and become leader
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Give node-1 time to start and become leader (election timeout is 150-300ms)
+    println!("Waiting for node-1 to become leader...");
+    tokio::time::sleep(Duration::from_millis(1000)).await;
 
     // Node-2 and Node-3 join via node-1
     let h2 = tokio::spawn(run_node("node-2", NODE2_ADDR, vec![NODE1_ADDR]));
