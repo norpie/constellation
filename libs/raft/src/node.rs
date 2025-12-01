@@ -199,6 +199,9 @@ impl<SM: StateMachine> RaftNode<SM> {
     /// This appends the command to the leader's log. The command will be replicated
     /// to followers via the heartbeat task and committed once a majority acknowledge.
     ///
+    /// For single-node clusters (no peers), entries are committed immediately since
+    /// the leader alone constitutes a majority.
+    ///
     /// Returns the log index where the command was appended. The caller can poll
     /// `last_applied() >= index` to know when the command has been applied to the
     /// state machine.
@@ -219,8 +222,15 @@ impl<SM: StateMachine> RaftNode<SM> {
         let entry = crate::LogEntry::new(term, command);
         inner.storage.append_entries(vec![entry]).await?;
 
-        // Return the index of the new entry
+        // Get the index of the new entry
         let index = inner.storage.last_log_index().await?;
+
+        // For single-node clusters, commit immediately (we are the majority)
+        let cluster_size = inner.peers.len() + 1;
+        if cluster_size == 1 {
+            inner.commit_index = index;
+        }
+
         Ok(index)
     }
 
