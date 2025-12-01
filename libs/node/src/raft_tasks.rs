@@ -168,10 +168,11 @@ async fn election_timeout_task(ctx: TaskContext) {
     println!("[{}] Election round complete, still candidate", node_id);
 }
 
-/// Leader heartbeat task - sends AppendEntries to all peers
+/// Leader heartbeat task - sends AppendEntries or InstallSnapshot to all peers
 ///
 /// This task runs at a fixed interval and sends heartbeats (empty AppendEntries)
-/// to all peers when this node is the leader.
+/// to all peers when this node is the leader. If a peer is too far behind
+/// (next_index <= snapshot_last_index), it sends InstallSnapshot instead.
 async fn heartbeat_task(ctx: TaskContext) {
     // Extract dependencies
     let Some(raft) = ctx.extract::<RaftNode<AddressBook>>() else {
@@ -189,6 +190,15 @@ async fn heartbeat_task(ctx: TaskContext) {
         return;
     }
 
+    // Get snapshot info for determining whether to send snapshot vs append_entries
+    let snapshot_last_index = match raft.snapshot_last_index().await {
+        Ok(idx) => idx,
+        Err(e) => {
+            eprintln!("heartbeat: Failed to get snapshot info: {}", e);
+            None
+        }
+    };
+
     // Get peers from AddressBook (source of truth for cluster membership)
     let self_id = raft.node_id().await;
     let peers: Vec<String> = raft
@@ -203,47 +213,125 @@ async fn heartbeat_task(ctx: TaskContext) {
 
     // Send heartbeats to all peers
     for peer_id in peers {
-        // Prepare AppendEntries for this peer
-        let request = match raft.prepare_append_entries(&peer_id).await {
-            Ok(req) => req,
-            Err(e) => {
-                eprintln!(
-                    "heartbeat: Failed to prepare append_entries for {}: {}",
-                    peer_id, e
-                );
-                continue;
-            }
+        // Check if peer needs a snapshot instead of AppendEntries
+        let peer_next_index = raft.get_next_index(&peer_id).await;
+
+        let needs_snapshot = match (peer_next_index, snapshot_last_index) {
+            (Some(next_idx), Some(snap_idx)) => next_idx <= snap_idx,
+            _ => false,
         };
 
-        // Send AppendEntries to peer
-        let response = match rpc.call_peer(&peer_id, "_raft.append_entries", &request) {
+        if needs_snapshot {
+            // Peer is too far behind - send InstallSnapshot
+            send_install_snapshot(&raft, &rpc, &peer_id).await;
+        } else {
+            // Normal case - send AppendEntries
+            send_append_entries(&raft, &rpc, &peer_id).await;
+        }
+    }
+}
+
+/// Send InstallSnapshot to a peer
+async fn send_install_snapshot(
+    raft: &RaftNode<AddressBook>,
+    rpc: &RpcClient,
+    peer_id: &str,
+) {
+    // Prepare InstallSnapshot request
+    let request = match raft.prepare_install_snapshot().await {
+        Ok(Some(req)) => req,
+        Ok(None) => {
+            eprintln!(
+                "heartbeat: No snapshot available for {} (should not happen)",
+                peer_id
+            );
+            return;
+        }
+        Err(e) => {
+            eprintln!(
+                "heartbeat: Failed to prepare install_snapshot for {}: {}",
+                peer_id, e
+            );
+            return;
+        }
+    };
+
+    let snapshot_last_index = request.last_included_index;
+
+    // Send InstallSnapshot to peer
+    let response: Result<constellation_raft::InstallSnapshotResponse, _> =
+        match rpc.call_peer(peer_id, "_raft.install_snapshot", &request) {
             Ok(builder) => builder.await,
             Err(e) => {
                 eprintln!(
-                    "heartbeat: Failed to serialize append_entries for {}: {}",
+                    "heartbeat: Failed to serialize install_snapshot for {}: {}",
                     peer_id, e
                 );
-                continue;
+                return;
             }
         };
 
-        match response {
-            Ok(resp) => {
-                // Handle response
-                if let Err(e) = raft.handle_append_entries_response(&peer_id, resp).await {
-                    eprintln!(
-                        "heartbeat: Failed to handle append_entries response from {}: {}",
-                        peer_id, e
-                    );
-                }
-            }
-            Err(e) => {
-                // RPC failed - peer might be down
+    match response {
+        Ok(_resp) => {
+            // Success - update next_index to point after the snapshot
+            raft.update_next_index_after_snapshot(peer_id, snapshot_last_index)
+                .await;
+        }
+        Err(e) => {
+            eprintln!(
+                "heartbeat: Failed to send install_snapshot to {}: {}",
+                peer_id, e
+            );
+        }
+    }
+}
+
+/// Send AppendEntries to a peer
+async fn send_append_entries(
+    raft: &RaftNode<AddressBook>,
+    rpc: &RpcClient,
+    peer_id: &str,
+) {
+    // Prepare AppendEntries for this peer
+    let request = match raft.prepare_append_entries(peer_id).await {
+        Ok(req) => req,
+        Err(e) => {
+            eprintln!(
+                "heartbeat: Failed to prepare append_entries for {}: {}",
+                peer_id, e
+            );
+            return;
+        }
+    };
+
+    // Send AppendEntries to peer
+    let response = match rpc.call_peer(peer_id, "_raft.append_entries", &request) {
+        Ok(builder) => builder.await,
+        Err(e) => {
+            eprintln!(
+                "heartbeat: Failed to serialize append_entries for {}: {}",
+                peer_id, e
+            );
+            return;
+        }
+    };
+
+    match response {
+        Ok(resp) => {
+            // Handle response
+            if let Err(e) = raft.handle_append_entries_response(peer_id, resp).await {
                 eprintln!(
-                    "heartbeat: Failed to send append_entries to {}: {}",
+                    "heartbeat: Failed to handle append_entries response from {}: {}",
                     peer_id, e
                 );
             }
+        }
+        Err(e) => {
+            // RPC failed - peer might be down
+            eprintln!(
+                "heartbeat: Failed to send append_entries to {}: {}",
+                peer_id, e
+            );
         }
     }
 }
@@ -314,5 +402,10 @@ async fn apply_committed_task(ctx: TaskContext) {
                 break;
             }
         }
+    }
+
+    // Check if we should take a snapshot (log compaction)
+    if let Err(e) = raft.maybe_snapshot().await {
+        eprintln!("apply_committed: Failed to maybe_snapshot: {}", e);
     }
 }

@@ -6,7 +6,8 @@ use crate::scheduler::Scheduler;
 use crate::Data;
 use constellation_fabric::codec::BincodeCodec;
 use constellation_raft::{
-    AppendEntriesRequest, AppendEntriesResponse, RaftNode, RequestVoteRequest, RequestVoteResponse,
+    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
+    RaftNode, RequestVoteRequest, RequestVoteResponse,
 };
 
 /// Built-in handler for Raft RequestVote RPC
@@ -127,4 +128,27 @@ async fn mesh_leave(
         .map_err(crate::error::Error::from)?;
 
     Ok(MeshResponse::Success)
+}
+
+/// Built-in handler for Raft InstallSnapshot RPC
+///
+/// Handles snapshot installation from the leader when a follower is too far
+/// behind to catch up via normal log replication.
+#[handler(route = "_raft.install_snapshot")]
+async fn install_snapshot(
+    req: InstallSnapshotRequest,
+    raft: Data<RaftNode<AddressBook>>,
+    scheduler: Data<Scheduler>,
+) -> Result<InstallSnapshotResponse, crate::error::Error> {
+    let resp = raft
+        .handle_install_snapshot(req)
+        .await
+        .map_err(crate::error::Error::from)?;
+
+    // Reset election timeout - valid leader contact
+    if let Some(handle) = scheduler.handle_by_name("election_timeout").await {
+        handle.reset_now();
+    }
+
+    Ok(resp)
 }
