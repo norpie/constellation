@@ -60,7 +60,7 @@ async fn test_basic_rpc_flow() {
         .service_name("MathService")
         .auto_discover(false)
         .register("add.v1", &ADD_HANDLER)
-        .listen(listener, "test")
+        .listen(listener, "test", "tcp", addr.to_string())
         .build()
         .unwrap();
 
@@ -132,7 +132,7 @@ async fn test_error_response() {
         .service_name("MathService")
         .auto_discover(false)
         .register("failing.v1", &FAILING_HANDLER_HANDLER)
-        .listen(listener, "test")
+        .listen(listener, "test", "tcp", addr.to_string())
         .build()
         .unwrap();
 
@@ -209,7 +209,7 @@ async fn test_rpc_client_end_to_end() {
         .id("server-node")
         .auto_discover(false)
         .register("add.v1", &ADD_HANDLER)
-        .listen(listener, "test")
+        .listen(listener, "test", "tcp", addr.to_string())
         .build()
         .unwrap();
 
@@ -278,7 +278,7 @@ async fn test_rpc_client_call_peer() {
         .id("server-node")
         .auto_discover(false)
         .register("add.v1", &ADD_HANDLER)
-        .listen(listener, "test")
+        .listen(listener, "test", "tcp", addr.to_string())
         .build()
         .unwrap();
 
