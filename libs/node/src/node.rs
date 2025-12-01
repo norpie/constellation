@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::ops::Deref;
 use std::sync::Arc;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, RwLock};
 
 /// Wrapper for shared application data
 ///
@@ -742,6 +742,13 @@ impl NodeBuilder {
         data.insert(
             TypeId::of::<Data<Scheduler>>(),
             Box::new(Data::new(scheduler)),
+        );
+
+        // Create Config and auto-register
+        let config = crate::config::Config::default();
+        data.insert(
+            TypeId::of::<Data<RwLock<crate::config::Config>>>(),
+            Box::new(Data::new(RwLock::new(config))),
         );
 
         // Create shutdown channel
