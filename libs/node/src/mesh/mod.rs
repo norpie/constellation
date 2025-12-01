@@ -7,13 +7,19 @@ pub use address_book::{AddressBook, AddressBookCommand, AddressBookResponse};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Response to a mesh join request
+/// Response to mesh operations (join, leave)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum JoinResponse {
-    /// Join successful - node is being added to cluster
+pub enum MeshResponse {
+    /// Operation successful
     Success,
     /// Not the leader - try the suggested node instead
     NotLeader { leader: Option<TransponderData> },
+}
+
+/// Request to leave the mesh
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LeaveRequest {
+    pub node_id: String,
 }
 
 /// Data structure advertised when a node joins the mesh
