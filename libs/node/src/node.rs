@@ -101,6 +101,14 @@ impl Node {
     pub fn id_fallback(&self) -> Option<&Arc<dyn Fn(String) -> String + Send + Sync>> {
         self.id_fallback.as_ref()
     }
+
+    /// Shutdown the node gracefully
+    ///
+    /// Signals all background tasks (scheduler, listeners) to stop.
+    /// Tasks will complete their current work before stopping.
+    pub fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
+    }
 }
 
 impl StartableNode {
@@ -138,14 +146,16 @@ impl StartableNode {
     ///
     /// Spawns listener tasks for all configured transports, joins the cluster
     /// (or forms a new one), starts Raft consensus tasks, and begins accepting
-    /// incoming RPC requests. This method runs until a shutdown signal is received (Ctrl+C).
+    /// incoming RPC requests.
+    ///
+    /// Returns an `Arc<Node>` that can be used to interact with the running node.
+    /// Call `node.shutdown()` to gracefully stop all background tasks.
     ///
     /// # Startup Sequence
     /// 1. Start transport listeners (accept connections)
     /// 2. Start scheduler loop (user tasks only)
     /// 3. Bootstrap: join existing cluster or form new one
     /// 4. Start Raft tasks (election, heartbeat, apply)
-    /// 5. Wait for shutdown signal
     ///
     /// # Example
     /// ```ignore
@@ -154,9 +164,11 @@ impl StartableNode {
     ///     .listen(tcp_listener, "default", "tcp", "192.168.1.10:8080")
     ///     .build()?;
     ///
-    /// node.start().await?; // Runs forever
+    /// let running_node = node.start().await?;
+    /// // ... do work ...
+    /// running_node.shutdown();
     /// ```
-    pub async fn start(self) -> Result<()> {
+    pub async fn start(self) -> Result<Arc<Node>> {
         // Extract bootstrap_peers (will be dropped after use)
         let bootstrap_peers = self.bootstrap_peers;
         let mut node = self.node;
@@ -179,21 +191,31 @@ impl StartableNode {
         // 1. Spawn listener tasks (accept connections)
         for (listener, zone) in listeners {
             let node_clone = Arc::clone(&node);
+            let mut shutdown_rx = shutdown_tx.subscribe();
 
             tokio::spawn(async move {
                 loop {
-                    match listener.accept_connection().await {
-                        Ok(transport) => {
-                            let node = Arc::clone(&node_clone);
-                            tokio::spawn(async move {
-                                if let Err(e) = handle_connection(transport, node).await {
-                                    eprintln!("Connection error: {}", e);
+                    tokio::select! {
+                        result = listener.accept_connection() => {
+                            match result {
+                                Ok(transport) => {
+                                    let node = Arc::clone(&node_clone);
+                                    tokio::spawn(async move {
+                                        if let Err(e) = handle_connection(transport, node).await {
+                                            eprintln!("Connection error: {}", e);
+                                        }
+                                    });
                                 }
-                            });
+                                Err(e) => {
+                                    eprintln!("Accept error on zone {}: {}", zone, e);
+                                    break;
+                                }
+                            }
                         }
-                        Err(e) => {
-                            eprintln!("Accept error on zone {}: {}", zone, e);
-                            break;
+                        _ = shutdown_rx.changed() => {
+                            if *shutdown_rx.borrow() {
+                                break;
+                            }
                         }
                     }
                 }
@@ -245,18 +267,9 @@ impl StartableNode {
             eprintln!("Warning: Failed to schedule Raft tasks: {}", e);
         }
 
-        // 5. Wait for shutdown signal
-        tokio::signal::ctrl_c()
-            .await
-            .map_err(|e| Error::Custom(format!("Failed to listen for shutdown signal: {}", e)))?;
-
-        // Signal shutdown to scheduler and tasks
-        let _ = shutdown_tx.send(true);
-
-        // Give tasks a moment to complete gracefully
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        Ok(())
+        // 5. Return the running node
+        // Caller can call node.shutdown() when they want to stop
+        Ok(node)
     }
 }
 
