@@ -19,6 +19,7 @@
 - **cortex** - Deployment orchestrator
 - **dispatch** - Container/VM management (interfaces with docker/podman/systemd)
 - **quartermaster** - VPS provisioning and procurement
+- **rogue** - Chaos engineering (intentional failure injection)
 - **autopilot** - LLM-based incident response suggestions
 - **cockpit** - Dashboard and human interface
 - **cargobay** - CDN and file storage
