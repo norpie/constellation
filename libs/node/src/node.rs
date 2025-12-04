@@ -368,29 +368,8 @@ async fn handle_connection(mut transport: Box<dyn Transport>, node: Arc<Node>) -
     }
 }
 
-/// Object-safe wrapper for TransportListener (internal use)
-///
-/// Allows storing heterogeneous listeners in NodeBuilder
-#[async_trait::async_trait]
-trait ListenerHandle: Send + Sync {
-    /// Accept a connection and return a boxed Transport
-    async fn accept_connection(&self) -> Result<Box<dyn Transport>>;
-}
-
-/// Wrapper that implements ListenerHandle for any TransportListener
-struct ListenerWrapper<L>(L);
-
-#[async_trait::async_trait]
-impl<L> ListenerHandle for ListenerWrapper<L>
-where
-    L: TransportListener + Send + Sync,
-    L::Transport: Transport + Send + Sync + 'static,
-{
-    async fn accept_connection(&self) -> Result<Box<dyn Transport>> {
-        let transport = self.0.accept().await?;
-        Ok(Box::new(transport))
-    }
-}
+// ListenerHandle and ListenerWrapper are now in binding.rs
+use crate::binding::{Binding, ListenerHandle, ListenerWrapper};
 
 /// Builder for constructing a Node
 pub struct NodeBuilder {
@@ -554,31 +533,63 @@ impl NodeBuilder {
         self
     }
 
+    /// Add a binding (listener + codecs + advertised addresses)
+    ///
+    /// This is the preferred way to configure listeners. Each binding ties together
+    /// a transport listener with the codecs it supports and the addresses it advertises.
+    ///
+    /// # Example
+    /// ```ignore
+    /// use constellation_fabric::transport::TcpTransportListener;
+    /// use constellation_fabric::Codec;
+    /// use constellation_node::Binding;
+    ///
+    /// let listener = TcpTransportListener::bind("0.0.0.0:8080".parse()?).await?;
+    ///
+    /// let binding = Binding::new(listener, "tcp")
+    ///     .codecs([Codec::Bincode])
+    ///     .advertise("internal", "10.0.1.5:8080")
+    ///     .advertise("external", "203.0.113.5:8080");
+    ///
+    /// Node::builder()
+    ///     .service_name("MyService")
+    ///     .binding(binding)
+    ///     .build()?
+    ///     .start().await?;
+    /// ```
+    pub fn binding(mut self, binding: Binding) -> Self {
+        // Use first network as the zone for logging (will be refactored with AdvertisedAddress)
+        let zone = binding
+            .advertised()
+            .first()
+            .map(|e| e.network.clone())
+            .unwrap_or_else(|| "default".to_string());
+
+        // Convert AdvertisedEndpoints to AddressGroups
+        for endpoint in binding.advertised() {
+            self.advertise_addresses.push(crate::mesh::AddressGroup {
+                zone: endpoint.network.clone(),
+                transport: binding.transport().to_string(),
+                addresses: vec![endpoint.address.clone()],
+            });
+        }
+
+        // Store listener
+        self.listeners.push((binding.listener, zone));
+        self
+    }
+
     /// Add a listener for any transport type
     ///
-    /// This method is fully extensible - it works with any implementation of
-    /// `TransportListener`, including custom user-defined transports.
+    /// **Deprecated:** Use [`binding()`](Self::binding) instead, which provides
+    /// better support for codecs and multi-network advertisement.
     ///
     /// # Arguments
     /// * `listener` - Any type implementing `TransportListener`
     /// * `zone` - Network zone identifier (e.g., "default", "internal", "dc-east")
     /// * `transport_name` - Transport protocol name (e.g., "tcp", "unix")
     /// * `advertise_address` - Address to advertise to other nodes (e.g., "192.168.1.10:8080")
-    ///
-    /// # Example
-    /// ```ignore
-    /// use constellation_fabric::transport::{TcpTransportListener, UnixTransportListener};
-    ///
-    /// let tcp = TcpTransportListener::bind("0.0.0.0:8080".parse()?).await?;
-    /// let unix = UnixTransportListener::bind("/tmp/service.sock").await?;
-    ///
-    /// Node::builder()
-    ///     .service_name("MyService")
-    ///     .listen(tcp, "default", "tcp", "192.168.1.10:8080")
-    ///     .listen(unix, "local", "unix", "/tmp/service.sock")
-    ///     .build()?
-    ///     .start().await?;
-    /// ```
+    #[deprecated(since = "0.2.0", note = "Use `binding()` instead")]
     pub fn listen<L>(
         mut self,
         listener: L,

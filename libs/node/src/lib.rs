@@ -1,3 +1,4 @@
+pub mod binding;
 pub mod config;
 pub mod error;
 pub mod handler;
@@ -19,6 +20,7 @@ pub use config::{
     SchedulerConfig,
 };
 pub use error::{Error, Result};
+pub use binding::{AdvertisedEndpoint, Binding};
 pub use node::{Data, Node, NodeBuilder, StartableNode};
 pub use rpc::{
     BackoffStrategy, ErrorCategory, ErrorResponder, HandlerError, Responder, RpcClient,
