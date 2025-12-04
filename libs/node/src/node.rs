@@ -237,8 +237,8 @@ impl StartableNode {
                                 Ok(transport) => {
                                     let node = Arc::clone(&node_clone);
                                     tokio::spawn(async move {
-                                        if let Err(e) = handle_connection(transport, node).await {
-                                            eprintln!("Connection error: {}", e);
+                                        if let Err(_e) = handle_connection(transport, node).await {
+                                            // eprintln!("Connection error: {}", _e);
                                         }
                                     });
                                 }
@@ -315,15 +315,15 @@ impl StartableNode {
 
 /// Handle a single connection - receive requests, dispatch to handlers, send responses
 async fn handle_connection(mut transport: Box<dyn Transport>, node: Arc<Node>) -> Result<()> {
-    println!("[handle_connection] New connection on node {}", node.node_id);
+    // println!("[handle_connection] New connection on node {}", node.node_id);
     loop {
         // Receive frame from transport
         let frame = transport.receive().await?;
-        println!("[handle_connection] Received frame ({} bytes)", frame.len());
+        // println!("[handle_connection] Received frame ({} bytes)", frame.len());
 
         // Parse RPC frame (our custom format with separate header/payload)
         let (header, payload) = crate::rpc::parse_frame(&frame)?;
-        println!("[handle_connection] Route: {}", header.route);
+        // println!("[handle_connection] Route: {}", header.route);
 
         // Lookup handler for this route
         let handler = node
