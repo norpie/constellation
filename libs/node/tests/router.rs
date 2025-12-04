@@ -3,7 +3,7 @@
 //! These tests verify the router functionality for resolving routes and peers.
 
 use constellation_node::{
-    mesh::{AddressBook, AddressBookCommand, AddressGroup, Capabilities, TransponderData},
+    mesh::{AddressBook, AddressBookCommand, AdvertisedAddress, Capabilities, TransponderData},
     Data, Node, Router, RoutingError,
 };
 use constellation_raft::StateMachine;
@@ -115,7 +115,7 @@ async fn test_router_resolve_peer_with_populated_address_book() {
         .transport("tcp")
         .codec("bincode")
         .route("TestService.method.v1")
-        .address(AddressGroup::single("default", "tcp", "127.0.0.1:9002"))
+        .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:9002"))
         .capabilities(Capabilities::basic())
         .build();
 
@@ -154,7 +154,7 @@ async fn test_router_resolve_route_with_populated_address_book() {
         .transport("tcp")
         .codec("bincode")
         .route("TestService.method.v1")
-        .address(AddressGroup::single("default", "tcp", "127.0.0.1:9003"))
+        .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:9003"))
         .capabilities(Capabilities::basic())
         .build();
 
@@ -192,7 +192,7 @@ async fn test_router_any_peer_with_populated_address_book() {
         .transport("tcp")
         .codec("bincode")
         .route("SomeRoute.v1")
-        .address(AddressGroup::single("default", "tcp", "127.0.0.1:9004"))
+        .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:9004"))
         .capabilities(Capabilities::basic())
         .build();
 
@@ -201,7 +201,7 @@ async fn test_router_any_peer_with_populated_address_book() {
         .transport("tcp")
         .codec("bincode")
         .route("AnotherRoute.v1")
-        .address(AddressGroup::single("default", "tcp", "127.0.0.1:9005"))
+        .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:9005"))
         .capabilities(Capabilities::basic())
         .build();
 
@@ -241,7 +241,7 @@ async fn test_router_round_robin() {
         .transport("tcp")
         .codec("bincode")
         .route("SharedRoute.v1")
-        .address(AddressGroup::single("default", "tcp", "127.0.0.1:9006"))
+        .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:9006"))
         .capabilities(Capabilities::basic())
         .build();
 
@@ -250,7 +250,7 @@ async fn test_router_round_robin() {
         .transport("tcp")
         .codec("bincode")
         .route("SharedRoute.v1")
-        .address(AddressGroup::single("default", "tcp", "127.0.0.1:9007"))
+        .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:9007"))
         .capabilities(Capabilities::basic())
         .build();
 
@@ -301,7 +301,7 @@ async fn test_router_skips_self_in_route_resolution() {
         .transport("tcp")
         .codec("bincode")
         .route("SharedRoute.v1")
-        .address(AddressGroup::single("default", "tcp", "127.0.0.1:9008"))
+        .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:9008"))
         .capabilities(Capabilities::basic())
         .build();
 
@@ -310,7 +310,7 @@ async fn test_router_skips_self_in_route_resolution() {
         .transport("tcp")
         .codec("bincode")
         .route("SharedRoute.v1")
-        .address(AddressGroup::single("default", "tcp", "127.0.0.1:9009"))
+        .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:9009"))
         .capabilities(Capabilities::basic())
         .build();
 
@@ -349,7 +349,7 @@ async fn test_router_route_only_self_returns_error() {
         .transport("tcp")
         .codec("bincode")
         .route("OnlySelfRoute.v1")
-        .address(AddressGroup::single("default", "tcp", "127.0.0.1:9010"))
+        .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:9010"))
         .capabilities(Capabilities::basic())
         .build();
 

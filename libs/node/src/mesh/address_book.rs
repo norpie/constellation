@@ -178,7 +178,7 @@ impl StateMachine for AddressBook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mesh::{AddressGroup, Capabilities};
+    use crate::mesh::{AdvertisedAddress, Capabilities};
 
     #[tokio::test]
     async fn test_address_book_join() {
@@ -189,7 +189,7 @@ mod tests {
             .transport("tcp")
             .codec("bincode")
             .route("Service.method.v1")
-            .address(AddressGroup::single("default", "tcp", "127.0.0.1:8080"))
+            .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:8080"))
             .capabilities(Capabilities::basic())
             .build();
 
@@ -210,7 +210,7 @@ mod tests {
             .transport("tcp")
             .codec("bincode")
             .route("Service.method.v1")
-            .address(AddressGroup::single("default", "tcp", "127.0.0.1:8080"))
+            .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:8080"))
             .capabilities(Capabilities::basic())
             .build();
 
@@ -222,7 +222,7 @@ mod tests {
             .transport("tcp")
             .codec("bincode")
             .route("Service.method.v2") // Different route
-            .address(AddressGroup::single("default", "tcp", "127.0.0.1:9090")) // Different address
+            .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:9090")) // Different address
             .capabilities(Capabilities::basic())
             .build();
 
@@ -235,7 +235,7 @@ mod tests {
 
         // Address should be updated
         let node = book.get_node("node-1").unwrap();
-        assert_eq!(node.addresses[0].addresses[0], "127.0.0.1:9090");
+        assert_eq!(node.addresses[0].address, "127.0.0.1:9090");
     }
 
     #[tokio::test]
@@ -247,7 +247,7 @@ mod tests {
             .transport("tcp")
             .codec("bincode")
             .route("Service.method.v1")
-            .address(AddressGroup::single("default", "tcp", "127.0.0.1:8080"))
+            .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:8080"))
             .capabilities(Capabilities::basic())
             .build();
 
@@ -270,7 +270,7 @@ mod tests {
             .transport("tcp")
             .codec("bincode")
             .route("Service.method.v1")
-            .address(AddressGroup::single("default", "tcp", "127.0.0.1:8080"))
+            .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:8080"))
             .capabilities(Capabilities::basic())
             .build();
 
@@ -281,7 +281,7 @@ mod tests {
             .transport("tcp")
             .codec("bincode")
             .route("Service.method.v2") // Different route
-            .address(AddressGroup::single("default", "tcp", "127.0.0.1:9090"))
+            .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:9090"))
             .capabilities(Capabilities::basic())
             .build();
 

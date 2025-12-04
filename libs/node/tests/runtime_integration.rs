@@ -2,7 +2,7 @@
 
 use constellation_fabric::Codec;
 use constellation_fabric::transport::{TcpTransport, TcpTransportListener, Transport};
-use constellation_node::mesh::{AddressBook, AddressBookCommand, AddressGroup, Capabilities, TransponderData};
+use constellation_node::mesh::{AddressBook, AddressBookCommand, AdvertisedAddress, Capabilities, TransponderData};
 use constellation_node::{handler, Config, Data, Node, RpcClient};
 use constellation_raft::StateMachine;
 use serde::{Deserialize, Serialize};
@@ -231,7 +231,7 @@ async fn test_rpc_client_end_to_end() {
         .transport("tcp")
         .codec("bincode")
         .route("MathService.add.v1")
-        .address(AddressGroup::single("default", "tcp", &addr.to_string()))
+        .address(AdvertisedAddress::new("default", "tcp", &addr.to_string()))
         .capabilities(Capabilities::basic())
         .build();
 
@@ -300,7 +300,7 @@ async fn test_rpc_client_call_peer() {
         .transport("tcp")
         .codec("bincode")
         .route("MathService.add.v1")
-        .address(AddressGroup::single("default", "tcp", &addr.to_string()))
+        .address(AdvertisedAddress::new("default", "tcp", &addr.to_string()))
         .capabilities(Capabilities::basic())
         .build();
 

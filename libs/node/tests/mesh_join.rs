@@ -1,7 +1,7 @@
 // Test built-in mesh handlers (join, leave)
 
 use constellation_fabric::Codec;
-use constellation_node::mesh::{AddressGroup, Capabilities, LeaveRequest, MeshResponse, TransponderData};
+use constellation_node::mesh::{AdvertisedAddress, Capabilities, LeaveRequest, MeshResponse, TransponderData};
 use constellation_node::Node;
 
 #[tokio::test]
@@ -72,7 +72,7 @@ async fn test_mesh_response_serialization() {
         .node_id("leader-node")
         .transport("tcp")
         .codec("bincode")
-        .address(AddressGroup::single("default", "tcp", "127.0.0.1:8080"))
+        .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:8080"))
         .capabilities(Capabilities::basic())
         .build();
 

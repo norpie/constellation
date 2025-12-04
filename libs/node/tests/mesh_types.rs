@@ -1,6 +1,6 @@
 // Tests for mesh types and builders
 
-use constellation_node::mesh::{AddressGroup, Capabilities, Constraint, TransponderData};
+use constellation_node::mesh::{AdvertisedAddress, Capabilities, Constraint, TransponderData};
 
 #[test]
 fn test_transponder_data_builder() {
@@ -11,7 +11,7 @@ fn test_transponder_data_builder() {
         .codec("bincode")
         .route("UserService.login.v1")
         .route("UserService.logout.v1")
-        .address(AddressGroup::single("default", "tcp", "127.0.0.1:8080"))
+        .address(AdvertisedAddress::new("default", "tcp", "127.0.0.1:8080"))
         .capabilities(Capabilities::basic())
         .build();
 
@@ -24,26 +24,25 @@ fn test_transponder_data_builder() {
 }
 
 #[test]
-fn test_address_group_builder() {
-    let group = AddressGroup::builder()
-        .zone("dc-east")
+fn test_advertised_address_builder() {
+    let addr = AdvertisedAddress::builder()
+        .network("dc-east")
         .transport("tcp")
         .address("10.0.1.5:8080")
-        .address("10.0.1.6:8080")
         .build();
 
-    assert_eq!(group.zone, "dc-east");
-    assert_eq!(group.transport, "tcp");
-    assert_eq!(group.addresses.len(), 2);
+    assert_eq!(addr.network, "dc-east");
+    assert_eq!(addr.transport, "tcp");
+    assert_eq!(addr.address, "10.0.1.5:8080");
 }
 
 #[test]
-fn test_address_group_single() {
-    let group = AddressGroup::single("public", "tcp", "203.0.113.5:8080");
+fn test_advertised_address_new() {
+    let addr = AdvertisedAddress::new("public", "tcp", "203.0.113.5:8080");
 
-    assert_eq!(group.zone, "public");
-    assert_eq!(group.transport, "tcp");
-    assert_eq!(group.addresses, vec!["203.0.113.5:8080"]);
+    assert_eq!(addr.network, "public");
+    assert_eq!(addr.transport, "tcp");
+    assert_eq!(addr.address, "203.0.113.5:8080");
 }
 
 #[test]

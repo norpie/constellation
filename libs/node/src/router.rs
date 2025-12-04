@@ -137,21 +137,16 @@ impl Router {
         let transponder = self.peer(peer_id).await?;
 
         // Extract a usable address
-        // For MVP: take first address group, first address
-        let address_group = transponder
-            .addresses
-            .first()
-            .ok_or_else(|| RoutingError::NoAddressAvailable(peer_id.to_string()))?;
-
-        let address = address_group
+        // For MVP: take first advertised address
+        let advertised = transponder
             .addresses
             .first()
             .ok_or_else(|| RoutingError::NoAddressAvailable(peer_id.to_string()))?;
 
         Ok(ResolvedTarget {
             peer_id: peer_id.to_string(),
-            transport: address_group.transport.clone(),
-            address: address.clone(),
+            transport: advertised.transport.clone(),
+            address: advertised.address.clone(),
         })
     }
 

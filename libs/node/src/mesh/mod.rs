@@ -160,48 +160,63 @@ impl TransponderDataBuilder {
     }
 }
 
-/// Group of addresses for a specific transport in a specific zone
+/// An advertised address for reaching a node
 ///
-/// A node can advertise multiple address groups for different network zones
-/// (e.g., internal vs external) and different transports.
+/// Each AdvertisedAddress represents a single way to reach a node:
+/// a specific address on a specific network using a specific transport.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AddressGroup {
-    pub zone: String,
+pub struct AdvertisedAddress {
+    /// Network classification (e.g., "internal", "external", "dmz")
+    pub network: String,
+    /// Transport protocol (e.g., "tcp", "unix")
     pub transport: String,
-    pub addresses: Vec<String>,
+    /// The address to connect to
+    pub address: String,
+    /// Codecs supported on this address
+    pub codecs: Vec<constellation_fabric::Codec>,
+    /// Binding ID for health correlation
+    pub binding_id: String,
 }
 
-impl AddressGroup {
-    /// Create a builder for AddressGroup
-    pub fn builder() -> AddressGroupBuilder {
-        AddressGroupBuilder::new()
+impl AdvertisedAddress {
+    /// Create a builder for AdvertisedAddress
+    pub fn builder() -> AdvertisedAddressBuilder {
+        AdvertisedAddressBuilder::new()
     }
 
-    /// Create an AddressGroup with a single address
-    pub fn single(zone: impl Into<String>, transport: impl Into<String>, address: impl Into<String>) -> Self {
+    /// Create an AdvertisedAddress with minimal fields
+    pub fn new(
+        network: impl Into<String>,
+        transport: impl Into<String>,
+        address: impl Into<String>,
+    ) -> Self {
         Self {
-            zone: zone.into(),
+            network: network.into(),
             transport: transport.into(),
-            addresses: vec![address.into()],
+            address: address.into(),
+            codecs: vec![constellation_fabric::Codec::Bincode],
+            binding_id: String::new(),
         }
     }
 }
 
-/// Builder for AddressGroup
+/// Builder for AdvertisedAddress
 #[derive(Default)]
-pub struct AddressGroupBuilder {
-    zone: Option<String>,
+pub struct AdvertisedAddressBuilder {
+    network: Option<String>,
     transport: Option<String>,
-    addresses: Vec<String>,
+    address: Option<String>,
+    codecs: Vec<constellation_fabric::Codec>,
+    binding_id: Option<String>,
 }
 
-impl AddressGroupBuilder {
+impl AdvertisedAddressBuilder {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn zone(mut self, zone: impl Into<String>) -> Self {
-        self.zone = Some(zone.into());
+    pub fn network(mut self, network: impl Into<String>) -> Self {
+        self.network = Some(network.into());
         self
     }
 
@@ -211,23 +226,42 @@ impl AddressGroupBuilder {
     }
 
     pub fn address(mut self, address: impl Into<String>) -> Self {
-        self.addresses.push(address.into());
+        self.address = Some(address.into());
         self
     }
 
-    pub fn addresses(mut self, addresses: Vec<String>) -> Self {
-        self.addresses = addresses;
+    pub fn codecs(mut self, codecs: Vec<constellation_fabric::Codec>) -> Self {
+        self.codecs = codecs;
         self
     }
 
-    pub fn build(self) -> AddressGroup {
-        AddressGroup {
-            zone: self.zone.expect("zone is required"),
+    pub fn codec(mut self, codec: constellation_fabric::Codec) -> Self {
+        self.codecs.push(codec);
+        self
+    }
+
+    pub fn binding_id(mut self, binding_id: impl Into<String>) -> Self {
+        self.binding_id = Some(binding_id.into());
+        self
+    }
+
+    pub fn build(self) -> AdvertisedAddress {
+        AdvertisedAddress {
+            network: self.network.expect("network is required"),
             transport: self.transport.expect("transport is required"),
-            addresses: self.addresses,
+            address: self.address.expect("address is required"),
+            codecs: if self.codecs.is_empty() {
+                vec![constellation_fabric::Codec::Bincode]
+            } else {
+                self.codecs
+            },
+            binding_id: self.binding_id.unwrap_or_default(),
         }
     }
 }
+
+// Type alias for backwards compatibility during refactor
+pub type AddressGroup = AdvertisedAddress;
 
 /// Constraints on which transports and codecs can be used
 ///

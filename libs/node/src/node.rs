@@ -565,12 +565,14 @@ impl NodeBuilder {
             .map(|e| e.network.clone())
             .unwrap_or_else(|| "default".to_string());
 
-        // Convert AdvertisedEndpoints to AddressGroups
+        // Convert AdvertisedEndpoints to AdvertisedAddresses
         for endpoint in binding.advertised() {
-            self.advertise_addresses.push(crate::mesh::AddressGroup {
-                zone: endpoint.network.clone(),
+            self.advertise_addresses.push(crate::mesh::AdvertisedAddress {
+                network: endpoint.network.clone(),
                 transport: binding.transport().to_string(),
-                addresses: vec![endpoint.address.clone()],
+                address: endpoint.address.clone(),
+                codecs: binding.codecs_list().to_vec(),
+                binding_id: binding.binding_id().to_string(),
             });
         }
 
@@ -602,12 +604,16 @@ impl NodeBuilder {
         L::Transport: Transport + Send + Sync + 'static,
     {
         let zone = zone.into();
+        let transport = transport_name.into();
+        let address = advertise_address.into();
 
         // Store advertise address for TransponderData
-        self.advertise_addresses.push(crate::mesh::AddressGroup {
-            zone: zone.clone(),
-            transport: transport_name.into(),
-            addresses: vec![advertise_address.into()],
+        self.advertise_addresses.push(crate::mesh::AdvertisedAddress {
+            network: zone.clone(),
+            transport,
+            address,
+            codecs: vec![constellation_fabric::Codec::Bincode],
+            binding_id: String::new(),
         });
 
         // Wrap and store listener
@@ -926,11 +932,8 @@ async fn bootstrap_join(
     }
 
     // Try bootstrap peers sequentially
-    for (peer_id, address_group) in bootstrap_peers {
-        // Get first address from group
-        let Some(address) = address_group.addresses.first() else {
-            continue;
-        };
+    for (peer_id, advertised) in bootstrap_peers {
+        let address = &advertised.address;
 
         println!("[bootstrap_join] Trying to join via peer {} at {}", peer_id, address);
 
@@ -945,11 +948,7 @@ async fn bootstrap_join(
             }) => {
                 println!("[bootstrap_join] Peer {} is not leader, redirecting to {:?}", address, leader_data.node_id);
                 // Got redirected to leader, try that
-                if let Some(leader_addr) = leader_data
-                    .addresses
-                    .first()
-                    .and_then(|g| g.addresses.first())
-                {
+                if let Some(leader_addr) = leader_data.addresses.first().map(|a| &a.address) {
                     println!("[bootstrap_join] Trying leader at {}", leader_addr);
                     if let Ok(crate::mesh::MeshResponse::Success) =
                         try_join(leader_addr, self_data).await

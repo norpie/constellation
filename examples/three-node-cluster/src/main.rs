@@ -5,7 +5,7 @@
 //! Then node-1 is killed to test leader election.
 
 use constellation_fabric::transport::TcpTransportListener;
-use constellation_node::mesh::AddressGroup;
+use constellation_node::mesh::AdvertisedAddress;
 use constellation_node::Node;
 use std::sync::Arc;
 use std::time::Duration;
@@ -106,7 +106,7 @@ async fn run_node(node_id: &str, listen_addr: &str, bootstrap_peers: Vec<&str>) 
         };
         builder = builder.with_peer(
             peer_id,
-            AddressGroup::single("default", "tcp", peer_addr),
+            AdvertisedAddress::new("default", "tcp", peer_addr),
         );
     }
 
