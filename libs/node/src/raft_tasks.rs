@@ -9,7 +9,7 @@ use crate::config::RaftConfig;
 use crate::mesh::{AddressBook, AddressBookCommand};
 use crate::rpc::RpcClient;
 use crate::scheduler::{Schedule, Scheduler, TaskContext};
-use constellation_fabric::codec::{BincodeCodec, Codec};
+use constellation_fabric::Codec;
 use constellation_raft::RaftNode;
 use std::time::Duration;
 
@@ -368,7 +368,7 @@ async fn apply_committed_task(ctx: TaskContext) {
         let index = start_index + i as u64;
 
         // Deserialize command from raw bytes (node crate handles codec)
-        let command: AddressBookCommand = match BincodeCodec.decode(&entry.command) {
+        let command: AddressBookCommand = match Codec::Bincode.decode(&entry.command) {
             Ok(cmd) => cmd,
             Err(e) => {
                 eprintln!(

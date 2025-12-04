@@ -1,6 +1,6 @@
 // Test built-in Raft handlers
 
-use constellation_fabric::codec::{BincodeCodec, Codec};
+use constellation_fabric::Codec;
 use constellation_node::Node;
 use constellation_raft::{RequestVoteRequest, RequestVoteResponse};
 use uuid::Uuid;
@@ -23,7 +23,7 @@ async fn test_raft_request_vote_handler_registered() {
     let raft: Data<RaftNode<AddressBook>> = node.extract().expect("RaftNode should be auto-registered");
 
     // Create a RequestVote request
-    let codec = BincodeCodec;
+    let codec = Codec::Bincode;
     let request = RequestVoteRequest {
         term: 1,
         candidate_id: "candidate-node".to_string(),

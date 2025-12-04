@@ -1,6 +1,6 @@
 // Integration tests for node runtime
 
-use constellation_fabric::codec::{BincodeCodec, Codec};
+use constellation_fabric::Codec;
 use constellation_fabric::transport::{TcpTransport, TcpTransportListener, Transport};
 use constellation_node::mesh::{AddressBook, AddressBookCommand, AddressGroup, Capabilities, TransponderData};
 use constellation_node::{handler, Config, Data, Node, RpcClient};
@@ -78,7 +78,7 @@ async fn test_basic_rpc_flow() {
     let mut client = TcpTransport::connect(addr).await.unwrap();
 
     // Build request
-    let codec = BincodeCodec;
+    let codec = Codec::Bincode;
     let add_req = AddRequest { a: 5, b: 3 };
     let payload = codec.encode(&add_req).unwrap();
 
@@ -149,7 +149,7 @@ async fn test_error_response() {
     let mut client = TcpTransport::connect(addr).await.unwrap();
 
     // Build request
-    let codec = BincodeCodec;
+    let codec = Codec::Bincode;
     let add_req = AddRequest { a: 5, b: 3 };
     let payload = codec.encode(&add_req).unwrap();
 

@@ -77,9 +77,8 @@ fn generate_decode(info: &HandlerInfo) -> TokenStream {
     let crate_path = get_crate_path();
 
     quote! {
-        use ::constellation_fabric::codec::Codec as _;
-        let codec = ::constellation_fabric::codec::BincodeCodec;
-        let #request_param: #request_type = codec.decode(&request.payload)
+        let #request_param: #request_type = ::constellation_fabric::Codec::Bincode
+            .decode(&request.payload)
             .map_err(|e| #crate_path::HandlerError {
                 category: #crate_path::ErrorCategory::ClientError,
                 payload: Vec::new(), // Empty error payload - decode errors are framework-level
@@ -136,7 +135,7 @@ fn generate_call(info: &HandlerInfo) -> TokenStream {
                 let category = e.error_category();
 
                 // Serialize the error
-                let error_payload = codec.encode(&e)
+                let error_payload = ::constellation_fabric::Codec::Bincode.encode(&e)
                     .map_err(|_| #crate_path::HandlerError {
                         category: #crate_path::ErrorCategory::ServerError,
                         payload: Vec::new(), // Failed to serialize error - framework-level problem
@@ -157,7 +156,7 @@ fn generate_encode(info: &HandlerInfo) -> TokenStream {
     let crate_path = get_crate_path();
 
     quote! {
-        codec.encode(&response)
+        ::constellation_fabric::Codec::Bincode.encode(&response)
             .map_err(|_| #crate_path::HandlerError {
                 category: #crate_path::ErrorCategory::ServerError,
                 payload: Vec::new(), // Failed to encode response - framework-level problem

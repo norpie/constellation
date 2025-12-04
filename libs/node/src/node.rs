@@ -328,8 +328,8 @@ async fn handle_connection(mut transport: Box<dyn Transport>, node: Arc<Node>) -
         };
 
         // Serialize entire RpcResponse
-        let codec = constellation_fabric::codec::BincodeCodec;
-        let response_payload = constellation_fabric::codec::Codec::encode(&codec, &response)
+        let response_payload = constellation_fabric::Codec::Bincode
+            .encode(&response)
             .map_err(|e| Error::Serialization(e.to_string()))?;
 
         // Build response frame

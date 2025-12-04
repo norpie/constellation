@@ -157,20 +157,16 @@ impl StateMachine for AddressBook {
 
     async fn snapshot(&self) -> Result<Vec<u8>> {
         // Serialize the entire address book
-        constellation_fabric::codec::Codec::encode(
-            &constellation_fabric::codec::BincodeCodec,
-            &(&self.nodes, &self.route_index),
-        )
-        .map_err(|e| constellation_raft::Error::Serialization(e.to_string()))
+        constellation_fabric::Codec::Bincode
+            .encode(&(&self.nodes, &self.route_index))
+            .map_err(|e| constellation_raft::Error::Serialization(e.to_string()))
     }
 
     async fn restore(&mut self, snapshot: Vec<u8>) -> Result<()> {
         // Deserialize and replace state
-        let (nodes, route_index) = constellation_fabric::codec::Codec::decode(
-            &constellation_fabric::codec::BincodeCodec,
-            &snapshot,
-        )
-        .map_err(|e| constellation_raft::Error::Serialization(e.to_string()))?;
+        let (nodes, route_index) = constellation_fabric::Codec::Bincode
+            .decode(&snapshot)
+            .map_err(|e| constellation_raft::Error::Serialization(e.to_string()))?;
 
         self.nodes = nodes;
         self.route_index = route_index;

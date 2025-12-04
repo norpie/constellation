@@ -5,7 +5,7 @@ use crate::handler;
 use crate::mesh::{AddressBook, AddressBookCommand, LeaveRequest, MeshResponse, TransponderData};
 use crate::scheduler::Scheduler;
 use crate::Data;
-use constellation_fabric::codec::BincodeCodec;
+use constellation_fabric::Codec;
 use constellation_raft::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
     RaftNode, RequestVoteRequest, RequestVoteResponse,
@@ -82,7 +82,7 @@ async fn mesh_join(
 
     // Serialize the Join command
     let command = AddressBookCommand::Join(req.clone());
-    let bytes = BincodeCodec
+    let bytes = Codec::Bincode
         .encode(&command)
         .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
 
@@ -121,7 +121,7 @@ async fn mesh_leave(
 
     // Serialize the Leave command
     let command = AddressBookCommand::Leave(req.node_id);
-    let bytes = BincodeCodec
+    let bytes = Codec::Bincode
         .encode(&command)
         .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
 

@@ -1,6 +1,6 @@
 // Test built-in mesh handlers (join, leave)
 
-use constellation_fabric::codec::{BincodeCodec, Codec};
+use constellation_fabric::Codec;
 use constellation_node::mesh::{AddressGroup, Capabilities, LeaveRequest, MeshResponse, TransponderData};
 use constellation_node::Node;
 
@@ -53,7 +53,7 @@ async fn test_mesh_join_handler_not_prefixed_with_service_name() {
 
 #[tokio::test]
 async fn test_mesh_response_serialization() {
-    let codec = BincodeCodec;
+    let codec = Codec::Bincode;
 
     // Test Success variant
     let success = MeshResponse::Success;
@@ -116,7 +116,7 @@ async fn test_mesh_leave_handler_registered() {
 
 #[tokio::test]
 async fn test_leave_request_serialization() {
-    let codec = BincodeCodec;
+    let codec = Codec::Bincode;
 
     let request = LeaveRequest {
         node_id: "node-to-leave".to_string(),

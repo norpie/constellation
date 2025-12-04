@@ -44,7 +44,7 @@ async fn echo(req: EchoRequest, prefix: Data<String>) -> Result<EchoResponse, My
 
 #[tokio::test]
 async fn test_handler_macro_basic() {
-    use constellation_fabric::codec::{BincodeCodec, Codec};
+    use constellation_fabric::Codec;
 
     // Build node
     let node = Node::builder()
@@ -55,7 +55,7 @@ async fn test_handler_macro_basic() {
         .unwrap();
 
     // Create request
-    let codec = BincodeCodec;
+    let codec = Codec::Bincode;
     let echo_req = EchoRequest {
         message: "world".to_string(),
     };
@@ -118,7 +118,7 @@ async fn call_other_service(
 
 #[tokio::test]
 async fn test_handler_with_rpc_client() {
-    use constellation_fabric::codec::{BincodeCodec, Codec};
+    use constellation_fabric::Codec;
 
     // Build node - RpcClient is auto-registered
     let node = Node::builder()
@@ -128,7 +128,7 @@ async fn test_handler_with_rpc_client() {
         .unwrap();
 
     // Create request
-    let codec = BincodeCodec;
+    let codec = Codec::Bincode;
     let req = CallOtherServiceRequest { user_id: 123 };
     let payload = codec.encode(&req).unwrap();
 

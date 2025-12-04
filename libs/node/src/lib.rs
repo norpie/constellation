@@ -1,4 +1,3 @@
-pub mod codec;
 pub mod config;
 pub mod error;
 pub mod handler;
@@ -15,7 +14,6 @@ mod node;
 pub use constellation_node_derive::handler;
 
 // Re-export commonly used types
-pub use codec::{BincodeFactory, CodecFactory, RawCodecFactory, TypedCodec};
 pub use config::{
     get_json_path, set_json_path, Config, PathError, RaftConfig, RaftCrateConfig, RpcConfig,
     SchedulerConfig,

@@ -51,7 +51,7 @@ async fn ping_v2(_req: PingRequest) -> Result<PingResponse, TestError> {
 
 #[tokio::test]
 async fn test_auto_discovery_enabled() {
-    use constellation_fabric::codec::{BincodeCodec, Codec};
+    use constellation_fabric::Codec;
 
     // Build node with auto-discovery enabled (default)
     let node = Node::builder()
@@ -60,7 +60,7 @@ async fn test_auto_discovery_enabled() {
         .unwrap();
 
     // Create request for v1 handler
-    let codec = BincodeCodec;
+    let codec = Codec::Bincode;
     let ping_req = PingRequest {
         message: "hello".to_string(),
     };
@@ -83,7 +83,7 @@ async fn test_auto_discovery_enabled() {
 
 #[tokio::test]
 async fn test_auto_discovery_multiple_versions() {
-    use constellation_fabric::codec::{BincodeCodec, Codec};
+    use constellation_fabric::Codec;
 
     // Build node with auto-discovery
     let node = Node::builder()
@@ -91,7 +91,7 @@ async fn test_auto_discovery_multiple_versions() {
         .build()
         .unwrap();
 
-    let codec = BincodeCodec;
+    let codec = Codec::Bincode;
     let ping_req = PingRequest {
         message: "test".to_string(),
     };

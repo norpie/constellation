@@ -1,6 +1,6 @@
 // Basic node tests
 
-use constellation_fabric::codec::{BincodeCodec, Codec};
+use constellation_fabric::Codec;
 use constellation_node::handler::Handler;
 use constellation_node::rpc::RpcRequest;
 use constellation_node::{Data, Node};
@@ -31,7 +31,7 @@ impl Handler for LoginHandler {
         request: &RpcRequest,
     ) -> std::result::Result<Vec<u8>, constellation_node::HandlerError> {
         // Decode request using bincode
-        let codec = BincodeCodec;
+        let codec = Codec::Bincode;
         let req: LoginRequest = codec
             .decode(&request.payload)
             .map_err(|e| {
@@ -137,7 +137,7 @@ async fn test_handler_call() {
         .unwrap();
 
     // Create request
-    let codec = BincodeCodec;
+    let codec = Codec::Bincode;
     let login_req = LoginRequest {
         username: "alice".to_string(),
         password: "secret".to_string(),
