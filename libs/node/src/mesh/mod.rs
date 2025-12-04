@@ -263,119 +263,137 @@ impl AdvertisedAddressBuilder {
 // Type alias for backwards compatibility during refactor
 pub type AddressGroup = AdvertisedAddress;
 
-/// Constraints on which transports and codecs can be used
+/// Rules for what transports and codecs are allowed on a connection
 ///
-/// Used to enforce security policies, performance requirements, or compatibility.
-/// Route-specific constraints override global constraints.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Constraint {
-    pub allow_transports: Vec<String>,
-    pub deny_transports: Vec<String>,
-    pub allow_codecs: Vec<String>,
-    pub deny_codecs: Vec<String>,
-    pub allow_combinations: Vec<(String, String)>,
-    pub deny_combinations: Vec<(String, String)>,
+/// Empty vectors mean "all allowed". Non-empty means "only these are allowed".
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ConnectionRules {
+    /// Empty = all transports allowed. Non-empty = only these transports.
+    pub transports: Vec<String>,
+    /// Empty = all codecs allowed. Non-empty = only these codecs.
+    pub codecs: Vec<constellation_fabric::Codec>,
 }
 
-impl Constraint {
-    /// Create a builder for Constraint
-    pub fn builder() -> ConstraintBuilder {
-        ConstraintBuilder::new()
-    }
-
-    /// Allow all transports and codecs (no restrictions)
+impl ConnectionRules {
+    /// No restrictions - allow all transports and codecs
     pub fn allow_all() -> Self {
         Self::default()
     }
 
-    /// Deny everything (node cannot be reached)
-    pub fn deny_all() -> Self {
+    /// Only allow the specified transport
+    pub fn only_transport(transport: impl Into<String>) -> Self {
         Self {
-            allow_transports: vec![],
-            deny_transports: vec![],
-            allow_codecs: vec![],
-            deny_codecs: vec![],
-            allow_combinations: vec![],
-            deny_combinations: vec![],
+            transports: vec![transport.into()],
+            codecs: vec![],
         }
+    }
+
+    /// Only allow the specified transports
+    pub fn only_transports(transports: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            transports: transports.into_iter().map(Into::into).collect(),
+            codecs: vec![],
+        }
+    }
+
+    /// Only allow the specified codec
+    pub fn only_codec(codec: constellation_fabric::Codec) -> Self {
+        Self {
+            transports: vec![],
+            codecs: vec![codec],
+        }
+    }
+
+    /// Only allow the specified codecs
+    pub fn only_codecs(codecs: impl IntoIterator<Item = constellation_fabric::Codec>) -> Self {
+        Self {
+            transports: vec![],
+            codecs: codecs.into_iter().collect(),
+        }
+    }
+
+    /// Only allow the specified transport and codec
+    pub fn only(transport: impl Into<String>, codec: constellation_fabric::Codec) -> Self {
+        Self {
+            transports: vec![transport.into()],
+            codecs: vec![codec],
+        }
+    }
+
+    /// Check if a transport is allowed by these rules
+    pub fn allows_transport(&self, transport: &str) -> bool {
+        self.transports.is_empty() || self.transports.iter().any(|t| t == transport)
+    }
+
+    /// Check if a codec is allowed by these rules
+    pub fn allows_codec(&self, codec: &constellation_fabric::Codec) -> bool {
+        self.codecs.is_empty() || self.codecs.contains(codec)
+    }
+
+    /// Check if a transport+codec combination is allowed
+    pub fn allows(&self, transport: &str, codec: &constellation_fabric::Codec) -> bool {
+        self.allows_transport(transport) && self.allows_codec(codec)
     }
 }
 
-/// Builder for Constraint
-#[derive(Default)]
-pub struct ConstraintBuilder {
-    allow_transports: Vec<String>,
-    deny_transports: Vec<String>,
-    allow_codecs: Vec<String>,
-    deny_codecs: Vec<String>,
-    allow_combinations: Vec<(String, String)>,
-    deny_combinations: Vec<(String, String)>,
+/// Network-centric constraints for routing decisions
+///
+/// Allows different rules per network (internal, external, dmz, etc.)
+/// with a default fallback for networks without specific rules.
+///
+/// # Example
+/// ```ignore
+/// use constellation_node::mesh::{Constraint, ConnectionRules};
+/// use constellation_fabric::Codec;
+///
+/// // Allow anything internally, but require TLS + Bincode externally
+/// let constraint = Constraint::default()
+///     .with_network("external", ConnectionRules::only("tls", Codec::Bincode));
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct Constraint {
+    /// Default rules when no network-specific rule matches
+    pub default: ConnectionRules,
+    /// Network-specific rule overrides
+    pub per_network: HashMap<String, ConnectionRules>,
 }
 
-impl ConstraintBuilder {
-    pub fn new() -> Self {
+impl Constraint {
+    /// No restrictions - allow all transports/codecs on all networks
+    pub fn allow_all() -> Self {
         Self::default()
     }
 
-    pub fn allow_transport(mut self, transport: impl Into<String>) -> Self {
-        self.allow_transports.push(transport.into());
+    /// Set the default rules (for networks without specific rules)
+    pub fn with_default(mut self, rules: ConnectionRules) -> Self {
+        self.default = rules;
         self
     }
 
-    pub fn allow_transports(mut self, transports: Vec<String>) -> Self {
-        self.allow_transports = transports;
+    /// Add rules for a specific network
+    pub fn with_network(mut self, network: impl Into<String>, rules: ConnectionRules) -> Self {
+        self.per_network.insert(network.into(), rules);
         self
     }
 
-    pub fn deny_transport(mut self, transport: impl Into<String>) -> Self {
-        self.deny_transports.push(transport.into());
-        self
+    /// Get the rules that apply to a specific network
+    pub fn rules_for(&self, network: &str) -> &ConnectionRules {
+        self.per_network.get(network).unwrap_or(&self.default)
     }
 
-    pub fn deny_transports(mut self, transports: Vec<String>) -> Self {
-        self.deny_transports = transports;
-        self
+    /// Check if a transport is allowed on a network
+    pub fn allows_transport(&self, network: &str, transport: &str) -> bool {
+        self.rules_for(network).allows_transport(transport)
     }
 
-    pub fn allow_codec(mut self, codec: impl Into<String>) -> Self {
-        self.allow_codecs.push(codec.into());
-        self
+    /// Check if a codec is allowed on a network
+    pub fn allows_codec(&self, network: &str, codec: &constellation_fabric::Codec) -> bool {
+        self.rules_for(network).allows_codec(codec)
     }
 
-    pub fn allow_codecs(mut self, codecs: Vec<String>) -> Self {
-        self.allow_codecs = codecs;
-        self
-    }
-
-    pub fn deny_codec(mut self, codec: impl Into<String>) -> Self {
-        self.deny_codecs.push(codec.into());
-        self
-    }
-
-    pub fn deny_codecs(mut self, codecs: Vec<String>) -> Self {
-        self.deny_codecs = codecs;
-        self
-    }
-
-    pub fn allow_combination(mut self, transport: impl Into<String>, codec: impl Into<String>) -> Self {
-        self.allow_combinations.push((transport.into(), codec.into()));
-        self
-    }
-
-    pub fn deny_combination(mut self, transport: impl Into<String>, codec: impl Into<String>) -> Self {
-        self.deny_combinations.push((transport.into(), codec.into()));
-        self
-    }
-
-    pub fn build(self) -> Constraint {
-        Constraint {
-            allow_transports: self.allow_transports,
-            deny_transports: self.deny_transports,
-            allow_codecs: self.allow_codecs,
-            deny_codecs: self.deny_codecs,
-            allow_combinations: self.allow_combinations,
-            deny_combinations: self.deny_combinations,
-        }
+    /// Check if a transport+codec combination is allowed on a network
+    pub fn allows(&self, network: &str, transport: &str, codec: &constellation_fabric::Codec) -> bool {
+        self.rules_for(network).allows(transport, codec)
     }
 }
 

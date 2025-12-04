@@ -46,35 +46,59 @@ fn test_advertised_address_new() {
 }
 
 #[test]
-fn test_constraint_builder() {
-    let constraint = Constraint::builder()
-        .allow_transport("tcp")
-        .allow_transport("unix")
-        .deny_codec("protobuf")
-        .allow_combination("tcp", "bincode")
-        .build();
+fn test_connection_rules() {
+    use constellation_fabric::Codec;
+    use constellation_node::mesh::ConnectionRules;
 
-    assert_eq!(constraint.allow_transports, vec!["tcp", "unix"]);
-    assert_eq!(constraint.deny_codecs, vec!["protobuf"]);
-    assert_eq!(constraint.allow_combinations.len(), 1);
+    // Test allow_all
+    let rules = ConnectionRules::allow_all();
+    assert!(rules.allows_transport("tcp"));
+    assert!(rules.allows_transport("anything"));
+    assert!(rules.allows_codec(&Codec::Bincode));
+
+    // Test only_transport
+    let rules = ConnectionRules::only_transport("tls");
+    assert!(rules.allows_transport("tls"));
+    assert!(!rules.allows_transport("tcp"));
+    assert!(rules.allows_codec(&Codec::Bincode)); // codecs unrestricted
+
+    // Test only_codec
+    let rules = ConnectionRules::only_codec(Codec::Bincode);
+    assert!(rules.allows_transport("tcp")); // transports unrestricted
+    assert!(rules.allows_codec(&Codec::Bincode));
+    assert!(!rules.allows_codec(&Codec::Json));
+
+    // Test only (transport + codec)
+    let rules = ConnectionRules::only("tls", Codec::Bincode);
+    assert!(rules.allows("tls", &Codec::Bincode));
+    assert!(!rules.allows("tcp", &Codec::Bincode));
+    assert!(!rules.allows("tls", &Codec::Json));
 }
 
 #[test]
 fn test_constraint_allow_all() {
     let constraint = Constraint::allow_all();
 
-    assert!(constraint.allow_transports.is_empty());
-    assert!(constraint.deny_transports.is_empty());
-    assert!(constraint.allow_codecs.is_empty());
-    assert!(constraint.deny_codecs.is_empty());
+    assert!(constraint.default.transports.is_empty());
+    assert!(constraint.default.codecs.is_empty());
+    assert!(constraint.per_network.is_empty());
 }
 
 #[test]
-fn test_constraint_deny_all() {
-    let constraint = Constraint::deny_all();
+fn test_constraint_per_network() {
+    use constellation_fabric::Codec;
+    use constellation_node::mesh::ConnectionRules;
 
-    // deny_all is represented by empty lists (no explicit allows)
-    assert!(constraint.allow_transports.is_empty());
+    let constraint = Constraint::allow_all()
+        .with_network("external", ConnectionRules::only("tls", Codec::Bincode));
+
+    // Internal (no specific rule) uses default (allow all)
+    assert!(constraint.allows("internal", "tcp", &Codec::Json));
+
+    // External has specific rules
+    assert!(constraint.allows("external", "tls", &Codec::Bincode));
+    assert!(!constraint.allows("external", "tcp", &Codec::Bincode));
+    assert!(!constraint.allows("external", "tls", &Codec::Json));
 }
 
 #[test]
@@ -110,13 +134,13 @@ fn test_capabilities_builder() {
 
 #[test]
 fn test_transponder_with_constraints() {
-    let global = Constraint::builder()
-        .allow_transport("tcp")
-        .build();
+    use constellation_node::mesh::ConnectionRules;
 
-    let route_specific = Constraint::builder()
-        .allow_transport("unix")
-        .build();
+    let global = Constraint::allow_all()
+        .with_default(ConnectionRules::only_transport("tcp"));
+
+    let route_specific = Constraint::allow_all()
+        .with_default(ConnectionRules::only_transport("unix"));
 
     let data = TransponderData::builder()
         .node_id("constrained-node")
@@ -127,12 +151,13 @@ fn test_transponder_with_constraints() {
         .route_constraint("Service.method.v1", route_specific)
         .build();
 
-    assert_eq!(data.global_constraints.allow_transports, vec!["tcp"]);
+    assert_eq!(data.global_constraints.default.transports, vec!["tcp"]);
     assert_eq!(
         data.route_constraints
             .get("Service.method.v1")
             .unwrap()
-            .allow_transports,
+            .default
+            .transports,
         vec!["unix"]
     );
 }
