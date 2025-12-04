@@ -10,14 +10,14 @@ use crate::transport::{TcpTransport, Transport, UnixTransport};
 /// High-level channel for bidirectional communication
 ///
 /// Combines a transport and codec for persistent connections
-pub struct Channel<C> {
+pub struct Channel {
     transport: Box<dyn Transport>,
-    codec: C,
+    codec: Codec,
 }
 
-impl<C: Codec> Channel<C> {
+impl Channel {
     /// Create a channel from an existing transport
-    pub fn from_transport(transport: impl Transport + 'static, codec: C) -> Self {
+    pub fn from_transport(transport: impl Transport + 'static, codec: Codec) -> Self {
         Self {
             transport: Box::new(transport),
             codec,
@@ -25,13 +25,13 @@ impl<C: Codec> Channel<C> {
     }
 
     /// Open a TCP channel
-    pub async fn tcp(addr: SocketAddr, codec: C) -> Result<Self> {
+    pub async fn tcp(addr: SocketAddr, codec: Codec) -> Result<Self> {
         let transport = TcpTransport::connect(addr).await?;
         Ok(Self::from_transport(transport, codec))
     }
 
     /// Open a Unix socket channel
-    pub async fn unix(path: impl AsRef<Path>, codec: C) -> Result<Self> {
+    pub async fn unix(path: impl AsRef<Path>, codec: Codec) -> Result<Self> {
         let transport = UnixTransport::connect(path).await?;
         Ok(Self::from_transport(transport, codec))
     }

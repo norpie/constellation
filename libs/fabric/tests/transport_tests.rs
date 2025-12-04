@@ -1,6 +1,6 @@
 use constellation_fabric::{
     channel::Channel,
-    codec::BincodeCodec,
+    codec::Codec,
     error::Error,
     transport::{
         TcpTransport, TcpTransportListener, Transport, TransportListener, UnixTransport,
@@ -150,7 +150,7 @@ async fn channel_with_codec_roundtrip() {
     // Spawn server
     tokio::spawn(async move {
         let (transport, _addr) = listener.accept().await.unwrap();
-        let mut channel = Channel::from_transport(transport, BincodeCodec);
+        let mut channel = Channel::from_transport(transport, Codec::Bincode);
 
         let msg: TestMessage = channel.receive().await.unwrap();
         channel.send(&msg).await.unwrap(); // Echo back
@@ -158,7 +158,7 @@ async fn channel_with_codec_roundtrip() {
 
     // Client
     let transport = TcpTransport::connect(addr).await.unwrap();
-    let mut channel = Channel::from_transport(transport, BincodeCodec);
+    let mut channel = Channel::from_transport(transport, Codec::Bincode);
 
     channel.send(&expected_msg).await.unwrap();
     let response: TestMessage = channel.receive().await.unwrap();

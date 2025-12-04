@@ -1,12 +1,12 @@
 //! Constellation Fabric - Low-level transport and codec layer
 //!
 //! Provides transport abstractions (TCP, Unix sockets) and codec support
-//! (bincode, raw bytes) for service-to-service communication.
+//! for service-to-service communication.
 //!
 //! # Example
 //!
 //! ```no_run
-//! use constellation_fabric::{Channel, codec::BincodeCodec, request::request_tcp};
+//! use constellation_fabric::{Channel, codec::Codec, request::request_tcp};
 //! use serde::{Serialize, Deserialize};
 //!
 //! #[derive(Serialize, Deserialize)]
@@ -19,10 +19,10 @@
 //! // One-off request
 //! let addr = "127.0.0.1:8080".parse()?;
 //! let req = MyRequest { data: "hello".to_string() };
-//! let resp: MyResponse = request_tcp(addr, &req, BincodeCodec).await?;
+//! let resp: MyResponse = request_tcp(addr, &req, Codec::Bincode).await?;
 //!
 //! // Or use a persistent channel
-//! let mut channel = Channel::tcp(addr, BincodeCodec).await?;
+//! let mut channel = Channel::tcp(addr, Codec::Bincode).await?;
 //! channel.send(&req).await?;
 //! let resp: MyResponse = channel.receive().await?;
 //! # Ok(())
@@ -37,4 +37,5 @@ pub mod transport;
 
 // Re-exports for convenience
 pub use channel::Channel;
+pub use codec::Codec;
 pub use error::{Error, Result};
