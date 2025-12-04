@@ -237,30 +237,6 @@ impl<SM: StateMachine> RaftNode<SM> {
         Ok(index)
     }
 
-    // State transition methods
-
-    /// Convert to follower state
-    ///
-    /// This is called when:
-    /// - Receiving an RPC with a higher term
-    /// - Discovering a valid leader
-    /// - Starting up
-    async fn convert_to_follower(&self, term: Term) -> Result<()> {
-        let mut inner = self.inner.write().await;
-
-        // Update term if higher
-        if term > inner.storage.get_term().await? {
-            inner.storage.save_term(term).await?;
-            inner.storage.save_voted_for(None).await?;
-        }
-
-        inner.state = State::Follower;
-        inner.current_leader = None;
-        inner.votes_received.clear();
-
-        Ok(())
-    }
-
     /// Start an election
     ///
     /// Increments the term, votes for self, and transitions to candidate state.
@@ -534,31 +510,6 @@ impl<SM: StateMachine> RaftNode<SM> {
         Ok(())
     }
 
-    /// Convert to leader state
-    ///
-    /// This is called when receiving majority votes as a candidate.
-    async fn convert_to_leader(&self) -> Result<()> {
-        let mut inner = self.inner.write().await;
-
-        inner.state = State::Leader;
-        inner.current_leader = Some(inner.node_id.clone());
-
-        // Initialize leader volatile state
-        // next_index: for each server, index of next log entry to send
-        // (initialized to leader's last log index + 1)
-        let last_log_index = inner.storage.last_log_index().await?;
-        inner.next_index.clear();
-        inner.match_index.clear();
-
-        let peers = inner.peers.clone();
-        for peer in peers {
-            inner.next_index.insert(peer.clone(), last_log_index + 1);
-            inner.match_index.insert(peer, 0);
-        }
-
-        Ok(())
-    }
-
     // Helper methods
 
     /// Calculate the majority size for the cluster
@@ -572,26 +523,6 @@ impl<SM: StateMachine> RaftNode<SM> {
         let cluster_size = inner.peers.len() + 1; // peers + self
         let majority = Self::calculate_majority(cluster_size);
         inner.votes_received.len() >= majority
-    }
-
-    /// Check if a candidate's log is at least as up-to-date as ours
-    ///
-    /// Comparison rule from Raft paper:
-    /// - If terms differ, the log with the later term is more up-to-date
-    /// - If terms are the same, the longer log is more up-to-date
-    async fn is_log_up_to_date(&self, last_log_term: Term, last_log_index: LogIndex) -> Result<bool> {
-        let inner = self.inner.read().await;
-
-        let our_last_term = inner.storage.last_log_term().await?;
-        let our_last_index = inner.storage.last_log_index().await?;
-
-        // Compare terms first
-        if last_log_term != our_last_term {
-            return Ok(last_log_term > our_last_term);
-        }
-
-        // Terms are equal, compare lengths
-        Ok(last_log_index >= our_last_index)
     }
 
     // RPC Handlers
@@ -1235,25 +1166,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_convert_to_follower() {
-        let node = RaftNode::builder()
-            .node_id("node-1")
-            .state_machine(TestStateMachine)
-            .build()
-            .unwrap();
-
-        // Start as follower in term 0
-        assert_eq!(node.state().await, State::Follower);
-        assert_eq!(node.current_term().await.unwrap(), 0);
-
-        // Convert to follower with higher term
-        node.convert_to_follower(5).await.unwrap();
-        assert_eq!(node.state().await, State::Follower);
-        assert_eq!(node.current_term().await.unwrap(), 5);
-        assert_eq!(node.current_leader().await, None);
-    }
-
-    #[tokio::test]
     async fn test_start_election() {
         let node = RaftNode::builder()
             .node_id("node-1")
@@ -1360,8 +1272,16 @@ mod tests {
             .build()
             .unwrap();
 
-        // First, advance to term 5
-        node.convert_to_follower(5).await.unwrap();
+        // First, advance to term 5 by receiving AppendEntries from a leader in term 5
+        let advance_request = crate::AppendEntriesRequest {
+            term: 5,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+        };
+        node.handle_append_entries(advance_request).await.unwrap();
 
         // Request vote in old term 3
         let request = crate::RequestVoteRequest {
@@ -1507,8 +1427,16 @@ mod tests {
             .build()
             .unwrap();
 
-        // Advance to term 5
-        node.convert_to_follower(5).await.unwrap();
+        // Advance to term 5 by receiving AppendEntries from a leader in term 5
+        let advance_request = crate::AppendEntriesRequest {
+            term: 5,
+            leader_id: "leader".to_string(),
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![],
+            leader_commit: 0,
+        };
+        node.handle_append_entries(advance_request).await.unwrap();
 
         // Receive AppendEntries from old term
         let request = crate::AppendEntriesRequest {
