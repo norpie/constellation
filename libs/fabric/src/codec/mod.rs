@@ -19,17 +19,6 @@ pub enum Codec {
 }
 
 impl Codec {
-    /// Return the name of this codec
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Bincode => "bincode",
-            Self::Json => "json",
-            Self::MessagePack => "msgpack",
-            Self::Cbor => "cbor",
-            Self::Postcard => "postcard",
-        }
-    }
-
     /// Encode a value into bytes
     pub fn encode<T: Serialize>(&self, value: &T) -> Result<Vec<u8>> {
         match self {
