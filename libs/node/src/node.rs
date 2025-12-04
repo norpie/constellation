@@ -959,15 +959,18 @@ async fn bootstrap_join(
                 "Cannot start: no bootstrap peers and can_lead=false".to_string(),
             ));
         }
-        // First node: apply directly to state machine (consensus of one is just us deciding)
-        // We bypass the Raft log since there's no one to replicate to anyway.
-        let command = crate::mesh::AddressBookCommand::Join(self_data.clone());
-        raft.apply_to_state_machine(command).await?;
-        println!("[bootstrap_join] First node added self to AddressBook");
-
-        // Become leader immediately (single-node cluster)
+        // First node: become leader first, then add ourselves via the log
+        // This ensures our Join entry is in the log and will be replicated to joiners.
         raft.start_election().await?;
         println!("[bootstrap_join] First node became leader");
+
+        // Now submit our Join command through the log
+        let command = crate::mesh::AddressBookCommand::Join(self_data.clone());
+        let bytes = constellation_fabric::Codec::Bincode
+            .encode(&command)
+            .map_err(|e| Error::Custom(format!("Failed to serialize join command: {}", e)))?;
+        raft.submit_command(bytes).await?;
+        println!("[bootstrap_join] First node added self to AddressBook");
         return Ok(());
     }
 
