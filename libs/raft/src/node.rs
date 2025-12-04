@@ -121,6 +121,29 @@ impl<SM: StateMachine> RaftNode<SM> {
         inner.peers.clone()
     }
 
+    /// Add a peer to the cluster
+    ///
+    /// This should be called when a node joins the cluster (after the join
+    /// command is committed). Updates the peer list used for majority calculations.
+    pub async fn add_peer(&self, peer_id: String) {
+        let mut inner = self.inner.write().await;
+        if !inner.peers.contains(&peer_id) && peer_id != inner.node_id {
+            inner.peers.push(peer_id);
+        }
+    }
+
+    /// Remove a peer from the cluster
+    ///
+    /// This should be called when a node leaves the cluster (after the leave
+    /// command is committed). Updates the peer list used for majority calculations.
+    pub async fn remove_peer(&self, peer_id: &str) {
+        let mut inner = self.inner.write().await;
+        inner.peers.retain(|p| p != peer_id);
+        // Also clean up leader state if we're tracking this peer
+        inner.next_index.remove(peer_id);
+        inner.match_index.remove(peer_id);
+    }
+
     /// Execute a function with read access to the state machine
     ///
     /// This allows external components to read the current state machine state

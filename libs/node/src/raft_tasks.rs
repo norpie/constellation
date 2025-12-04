@@ -381,9 +381,26 @@ async fn apply_committed_task(ctx: TaskContext) {
             }
         };
 
+        // Extract peer info before applying (we need it for Raft peer tracking)
+        let peer_change = match &command {
+            AddressBookCommand::Join(data) => Some((true, data.node_id.clone())),
+            AddressBookCommand::Leave(node_id) => Some((false, node_id.clone())),
+            _ => None,
+        };
+
         // Apply to state machine
         match raft.apply_to_state_machine(command).await {
             Ok(_response) => {
+                // Update Raft's peer list to match AddressBook
+                // This ensures majority calculations use the correct cluster size
+                if let Some((is_join, peer_id)) = peer_change {
+                    if is_join {
+                        raft.add_peer(peer_id).await;
+                    } else {
+                        raft.remove_peer(&peer_id).await;
+                    }
+                }
+
                 // Mark this entry as applied
                 if let Err(e) = raft.mark_applied(index).await {
                     eprintln!(
