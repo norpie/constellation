@@ -1,9 +1,14 @@
 //! Tests for the Router API
 //!
-//! These tests verify the router functionality for resolving routes and peers.
+//! These tests verify the router functionality for resolving routes and peers,
+//! including locality ranking and constraint filtering.
 
+use constellation_fabric::Codec;
 use constellation_node::{
-    mesh::{AddressBook, AddressBookCommand, AdvertisedAddress, Capabilities, TransponderData},
+    mesh::{
+        AddressBook, AddressBookCommand, AdvertisedAddress, Capabilities, ConnectionRules,
+        Constraint, TransponderData,
+    },
     Data, Node, Router, RoutingError,
 };
 use constellation_raft::StateMachine;
@@ -370,4 +375,580 @@ async fn test_router_route_only_self_returns_error() {
     // Should return RouteNotFound since only self handles it
     let result = router.resolve_route("OnlySelfRoute.v1").await;
     assert!(matches!(result, Err(RoutingError::RouteNotFound(_))));
+}
+
+// ============================================================================
+// Locality Ranking Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_router_locality_prefers_same_zone() {
+    let mut address_book = AddressBook::new();
+
+    // Caller is in us-east-1a
+    let caller_data = TransponderData::builder()
+        .node_id("caller")
+        .region("us-east")
+        .zone("us-east-1a")
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.1.1:8080"))
+        .build();
+
+    // Node in same zone (should be preferred)
+    let same_zone = TransponderData::builder()
+        .node_id("same-zone")
+        .region("us-east")
+        .zone("us-east-1a")
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.1.2:8080"))
+        .build();
+
+    // Node in different region
+    let different_region = TransponderData::builder()
+        .node_id("different-region")
+        .region("eu-west")
+        .zone("eu-west-1a")
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.2.1:8080"))
+        .build();
+
+    address_book
+        .apply(AddressBookCommand::Join(caller_data))
+        .await
+        .unwrap();
+    // Add different-region first to ensure locality wins over insertion order
+    address_book
+        .apply(AddressBookCommand::Join(different_region))
+        .await
+        .unwrap();
+    address_book
+        .apply(AddressBookCommand::Join(same_zone))
+        .await
+        .unwrap();
+
+    let raft = constellation_raft::RaftNode::builder()
+        .node_id("caller".to_string())
+        .storage(constellation_raft::MemoryStorage::new())
+        .state_machine(address_book)
+        .build()
+        .unwrap();
+
+    let router = Router::new("caller".to_string(), raft);
+
+    // Should always prefer same-zone node
+    let target = router.resolve_route("TestRoute.v1").await.unwrap();
+    assert_eq!(target.peer_id, "same-zone", "Should prefer same zone");
+}
+
+#[tokio::test]
+async fn test_router_locality_prefers_same_region_over_other() {
+    let mut address_book = AddressBook::new();
+
+    // Caller is in us-east-1a
+    let caller_data = TransponderData::builder()
+        .node_id("caller")
+        .region("us-east")
+        .zone("us-east-1a")
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.1.1:8080"))
+        .build();
+
+    // Node in same region, different zone (should be preferred over different region)
+    let same_region = TransponderData::builder()
+        .node_id("same-region")
+        .region("us-east")
+        .zone("us-east-1b") // Different zone but same region
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.1.3:8080"))
+        .build();
+
+    // Node in different region
+    let different_region = TransponderData::builder()
+        .node_id("different-region")
+        .region("eu-west")
+        .zone("eu-west-1a")
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.2.1:8080"))
+        .build();
+
+    address_book
+        .apply(AddressBookCommand::Join(caller_data))
+        .await
+        .unwrap();
+    // Add different-region first
+    address_book
+        .apply(AddressBookCommand::Join(different_region))
+        .await
+        .unwrap();
+    address_book
+        .apply(AddressBookCommand::Join(same_region))
+        .await
+        .unwrap();
+
+    let raft = constellation_raft::RaftNode::builder()
+        .node_id("caller".to_string())
+        .storage(constellation_raft::MemoryStorage::new())
+        .state_machine(address_book)
+        .build()
+        .unwrap();
+
+    let router = Router::new("caller".to_string(), raft);
+
+    // Should prefer same-region node over different-region
+    let target = router.resolve_route("TestRoute.v1").await.unwrap();
+    assert_eq!(
+        target.peer_id, "same-region",
+        "Should prefer same region over different region"
+    );
+}
+
+#[tokio::test]
+async fn test_router_locality_global_nodes_match() {
+    let mut address_book = AddressBook::new();
+
+    // Caller uses default "global" region/zone
+    let caller_data = TransponderData::builder()
+        .node_id("caller")
+        // No region/zone set - defaults to "global"
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.1.1:8080"))
+        .build();
+
+    // Node also using default "global"
+    let global_node = TransponderData::builder()
+        .node_id("global-node")
+        // No region/zone set - defaults to "global"
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.1.2:8080"))
+        .build();
+
+    // Node with explicit region
+    let regional_node = TransponderData::builder()
+        .node_id("regional-node")
+        .region("us-east")
+        .zone("us-east-1a")
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.2.1:8080"))
+        .build();
+
+    address_book
+        .apply(AddressBookCommand::Join(caller_data))
+        .await
+        .unwrap();
+    // Add regional first
+    address_book
+        .apply(AddressBookCommand::Join(regional_node))
+        .await
+        .unwrap();
+    address_book
+        .apply(AddressBookCommand::Join(global_node))
+        .await
+        .unwrap();
+
+    let raft = constellation_raft::RaftNode::builder()
+        .node_id("caller".to_string())
+        .storage(constellation_raft::MemoryStorage::new())
+        .state_machine(address_book)
+        .build()
+        .unwrap();
+
+    let router = Router::new("caller".to_string(), raft);
+
+    // Two "global" nodes should be considered same zone
+    let target = router.resolve_route("TestRoute.v1").await.unwrap();
+    assert_eq!(
+        target.peer_id, "global-node",
+        "Two global nodes should match as same zone"
+    );
+}
+
+// ============================================================================
+// Constraint Filtering Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_router_constraint_blocks_transport() {
+    let mut address_book = AddressBook::new();
+
+    // Caller only allows TLS transport
+    let caller_data = TransponderData::builder()
+        .node_id("caller")
+        .transport("tls")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tls", "10.0.1.1:8080"))
+        .global_constraints(
+            Constraint::allow_all().with_default(ConnectionRules::only_transport("tls")),
+        )
+        .build();
+
+    // Target only has TCP address (not TLS)
+    let target_data = TransponderData::builder()
+        .node_id("target")
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.1.2:8080"))
+        .build();
+
+    address_book
+        .apply(AddressBookCommand::Join(caller_data))
+        .await
+        .unwrap();
+    address_book
+        .apply(AddressBookCommand::Join(target_data))
+        .await
+        .unwrap();
+
+    let raft = constellation_raft::RaftNode::builder()
+        .node_id("caller".to_string())
+        .storage(constellation_raft::MemoryStorage::new())
+        .state_machine(address_book)
+        .build()
+        .unwrap();
+
+    let router = Router::new("caller".to_string(), raft);
+
+    // Should fail - caller requires TLS but target only has TCP
+    let result = router.resolve_peer("target").await;
+    assert!(
+        matches!(result, Err(RoutingError::NoAddressAvailable(_))),
+        "Should fail when transport doesn't match constraints"
+    );
+}
+
+#[tokio::test]
+async fn test_router_constraint_blocks_codec() {
+    let mut address_book = AddressBook::new();
+
+    // Caller only allows JSON codec
+    let caller_data = TransponderData::builder()
+        .node_id("caller")
+        .transport("tcp")
+        .codec("json")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.1.1:8080"))
+        .global_constraints(
+            Constraint::allow_all().with_default(ConnectionRules::only_codec(Codec::Json)),
+        )
+        .build();
+
+    // Target address only supports Bincode (not JSON)
+    let mut target_addr = AdvertisedAddress::new("internal", "tcp", "10.0.1.2:8080");
+    target_addr.codecs = vec![Codec::Bincode]; // Only bincode, no JSON
+
+    let target_data = TransponderData::builder()
+        .node_id("target")
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(target_addr)
+        .build();
+
+    address_book
+        .apply(AddressBookCommand::Join(caller_data))
+        .await
+        .unwrap();
+    address_book
+        .apply(AddressBookCommand::Join(target_data))
+        .await
+        .unwrap();
+
+    let raft = constellation_raft::RaftNode::builder()
+        .node_id("caller".to_string())
+        .storage(constellation_raft::MemoryStorage::new())
+        .state_machine(address_book)
+        .build()
+        .unwrap();
+
+    let router = Router::new("caller".to_string(), raft);
+
+    // Should fail - no codec intersection
+    let result = router.resolve_peer("target").await;
+    assert!(
+        matches!(result, Err(RoutingError::NoAddressAvailable(_))),
+        "Should fail when codec doesn't match constraints"
+    );
+}
+
+#[tokio::test]
+async fn test_router_constraint_per_network() {
+    let mut address_book = AddressBook::new();
+
+    // Caller requires TLS on external network, allows anything on internal
+    let caller_data = TransponderData::builder()
+        .node_id("caller")
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.1.1:8080"))
+        .global_constraints(
+            Constraint::allow_all()
+                .with_network("external", ConnectionRules::only_transport("tls")),
+        )
+        .build();
+
+    // Target has internal TCP address (should work)
+    let target_data = TransponderData::builder()
+        .node_id("target")
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.1.2:8080"))
+        .build();
+
+    address_book
+        .apply(AddressBookCommand::Join(caller_data))
+        .await
+        .unwrap();
+    address_book
+        .apply(AddressBookCommand::Join(target_data))
+        .await
+        .unwrap();
+
+    let raft = constellation_raft::RaftNode::builder()
+        .node_id("caller".to_string())
+        .storage(constellation_raft::MemoryStorage::new())
+        .state_machine(address_book)
+        .build()
+        .unwrap();
+
+    let router = Router::new("caller".to_string(), raft);
+
+    // Should succeed - internal network allows TCP
+    let result = router.resolve_peer("target").await;
+    assert!(result.is_ok(), "Internal TCP should be allowed");
+}
+
+#[tokio::test]
+async fn test_router_codec_intersection() {
+    let mut address_book = AddressBook::new();
+
+    // Caller allows Bincode and JSON
+    let caller_data = TransponderData::builder()
+        .node_id("caller")
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.1.1:8080"))
+        .global_constraints(
+            Constraint::allow_all()
+                .with_default(ConnectionRules::only_codecs([Codec::Bincode, Codec::Json])),
+        )
+        .build();
+
+    // Target address supports Bincode and MessagePack
+    let mut target_addr = AdvertisedAddress::new("internal", "tcp", "10.0.1.2:8080");
+    target_addr.codecs = vec![Codec::Bincode, Codec::MessagePack];
+
+    let target_data = TransponderData::builder()
+        .node_id("target")
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(target_addr)
+        .build();
+
+    address_book
+        .apply(AddressBookCommand::Join(caller_data))
+        .await
+        .unwrap();
+    address_book
+        .apply(AddressBookCommand::Join(target_data))
+        .await
+        .unwrap();
+
+    let raft = constellation_raft::RaftNode::builder()
+        .node_id("caller".to_string())
+        .storage(constellation_raft::MemoryStorage::new())
+        .state_machine(address_book)
+        .build()
+        .unwrap();
+
+    let router = Router::new("caller".to_string(), raft);
+
+    // Should succeed with Bincode as the intersection
+    let result = router.resolve_peer("target").await;
+    assert!(result.is_ok(), "Should find codec intersection");
+
+    let target = result.unwrap();
+    assert_eq!(target.codecs, vec![Codec::Bincode], "Intersection is Bincode");
+}
+
+#[tokio::test]
+async fn test_router_falls_back_to_next_node_on_constraint_failure() {
+    let mut address_book = AddressBook::new();
+
+    // Caller in us-east-1a, requires TLS
+    let caller_data = TransponderData::builder()
+        .node_id("caller")
+        .region("us-east")
+        .zone("us-east-1a")
+        .transport("tls")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tls", "10.0.1.1:8080"))
+        .global_constraints(
+            Constraint::allow_all().with_default(ConnectionRules::only_transport("tls")),
+        )
+        .build();
+
+    // Closest node (same zone) but only has TCP - will be filtered
+    let close_tcp_only = TransponderData::builder()
+        .node_id("close-tcp")
+        .region("us-east")
+        .zone("us-east-1a")
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.1.2:8080"))
+        .build();
+
+    // Further node (different region) but has TLS - should be selected
+    let far_tls = TransponderData::builder()
+        .node_id("far-tls")
+        .region("eu-west")
+        .zone("eu-west-1a")
+        .transport("tls")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tls", "10.0.2.1:8080"))
+        .build();
+
+    address_book
+        .apply(AddressBookCommand::Join(caller_data))
+        .await
+        .unwrap();
+    address_book
+        .apply(AddressBookCommand::Join(close_tcp_only))
+        .await
+        .unwrap();
+    address_book
+        .apply(AddressBookCommand::Join(far_tls))
+        .await
+        .unwrap();
+
+    let raft = constellation_raft::RaftNode::builder()
+        .node_id("caller".to_string())
+        .storage(constellation_raft::MemoryStorage::new())
+        .state_machine(address_book)
+        .build()
+        .unwrap();
+
+    let router = Router::new("caller".to_string(), raft);
+
+    // Should fall back to far-tls since close-tcp doesn't match constraints
+    let result = router.resolve_route("TestRoute.v1").await;
+    assert!(result.is_ok(), "Should fall back to compatible node");
+
+    let target = result.unwrap();
+    assert_eq!(
+        target.peer_id, "far-tls",
+        "Should select further node that matches constraints"
+    );
+}
+
+#[tokio::test]
+async fn test_router_bootstrap_uses_defaults() {
+    let mut address_book = AddressBook::new();
+
+    // Only target in address book (caller not registered yet - bootstrap scenario)
+    let target_data = TransponderData::builder()
+        .node_id("target")
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.1.2:8080"))
+        .build();
+
+    address_book
+        .apply(AddressBookCommand::Join(target_data))
+        .await
+        .unwrap();
+
+    let raft = constellation_raft::RaftNode::builder()
+        .node_id("caller".to_string()) // Caller not in address book
+        .storage(constellation_raft::MemoryStorage::new())
+        .state_machine(address_book)
+        .build()
+        .unwrap();
+
+    let router = Router::new("caller".to_string(), raft);
+
+    // Should succeed using default constraints (allow all)
+    let result = router.resolve_peer("target").await;
+    assert!(
+        result.is_ok(),
+        "Bootstrap should work with default constraints"
+    );
+}
+
+#[tokio::test]
+async fn test_router_resolved_target_has_codecs() {
+    let mut address_book = AddressBook::new();
+
+    let caller_data = TransponderData::builder()
+        .node_id("caller")
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(AdvertisedAddress::new("internal", "tcp", "10.0.1.1:8080"))
+        .build();
+
+    // Target with multiple codecs
+    let mut target_addr = AdvertisedAddress::new("internal", "tcp", "10.0.1.2:8080");
+    target_addr.codecs = vec![Codec::Bincode, Codec::Json, Codec::MessagePack];
+
+    let target_data = TransponderData::builder()
+        .node_id("target")
+        .transport("tcp")
+        .codec("bincode")
+        .route("TestRoute.v1")
+        .address(target_addr)
+        .build();
+
+    address_book
+        .apply(AddressBookCommand::Join(caller_data))
+        .await
+        .unwrap();
+    address_book
+        .apply(AddressBookCommand::Join(target_data))
+        .await
+        .unwrap();
+
+    let raft = constellation_raft::RaftNode::builder()
+        .node_id("caller".to_string())
+        .storage(constellation_raft::MemoryStorage::new())
+        .state_machine(address_book)
+        .build()
+        .unwrap();
+
+    let router = Router::new("caller".to_string(), raft);
+
+    let target = router.resolve_peer("target").await.unwrap();
+
+    // Should have all codecs (caller has no restrictions)
+    assert!(!target.codecs.is_empty(), "Should have codecs");
+    assert!(
+        target.codecs.contains(&Codec::Bincode),
+        "Should include Bincode"
+    );
 }
