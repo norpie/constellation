@@ -44,6 +44,8 @@ impl<T> Deref for Data<T> {
 pub struct Node {
     service_name: String,
     node_id: String,
+    region: String,
+    zone: String,
     can_lead: bool,
     id_fallback: Option<Arc<dyn Fn(String) -> String + Send + Sync>>,
     data: Arc<HashMap<TypeId, Box<dyn Any + Send + Sync>>>,
@@ -97,6 +99,16 @@ impl Node {
         self.can_lead
     }
 
+    /// Get the region
+    pub fn region(&self) -> &str {
+        &self.region
+    }
+
+    /// Get the zone
+    pub fn zone(&self) -> &str {
+        &self.zone
+    }
+
     /// Get the ID fallback strategy (if set)
     pub fn id_fallback(&self) -> Option<&Arc<dyn Fn(String) -> String + Send + Sync>> {
         self.id_fallback.as_ref()
@@ -135,6 +147,16 @@ impl StartableNode {
     /// Check if this node can become a leader (delegates to inner Node)
     pub fn can_lead(&self) -> bool {
         self.node.can_lead()
+    }
+
+    /// Get the region (delegates to inner Node)
+    pub fn region(&self) -> &str {
+        self.node.region()
+    }
+
+    /// Get the zone (delegates to inner Node)
+    pub fn zone(&self) -> &str {
+        self.node.zone()
     }
 
     /// Get the ID fallback strategy (delegates to inner Node)
@@ -183,6 +205,8 @@ impl StartableNode {
         let shutdown_tx = node.shutdown_tx.clone();
         let scheduler_tx = node.scheduler_tx.clone();
         let node_id = node.node_id.clone();
+        let region = node.region.clone();
+        let zone = node.zone.clone();
         let can_lead = node.can_lead;
         let raft = node.raft.clone();
 
@@ -256,7 +280,7 @@ impl StartableNode {
         }
 
         // 3. Bootstrap: join cluster or form new one
-        let self_data = build_self_transponder_data(&node_id, &advertise_addresses, &routes);
+        let self_data = build_self_transponder_data(&node_id, &region, &zone, &advertise_addresses, &routes);
         bootstrap_join(&bootstrap_peers, &self_data, &raft, can_lead).await?;
 
         // bootstrap_peers is dropped here (local variable goes out of scope after use)
@@ -372,6 +396,8 @@ where
 pub struct NodeBuilder {
     service_name: Option<String>,
     node_id: Option<String>,
+    region: Option<String>,
+    zone: Option<String>,
     can_lead: bool,
     id_fallback: Option<Arc<dyn Fn(String) -> String + Send + Sync>>,
     data: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
@@ -389,6 +415,8 @@ impl NodeBuilder {
         Self {
             service_name: None,
             node_id: None,
+            region: None,
+            zone: None,
             can_lead: true, // Default to allowing leadership
             id_fallback: None,
             data: HashMap::new(),
@@ -437,6 +465,33 @@ impl NodeBuilder {
         F: Fn(String) -> String + Send + Sync + 'static,
     {
         self.id_fallback = Some(Arc::new(fallback));
+        self
+    }
+
+    /// Set the geographic region for this node
+    ///
+    /// Used for topology-aware routing to prefer nodes in the same region.
+    /// Defaults to "global" if not set.
+    ///
+    /// # Example
+    /// ```ignore
+    /// Node::builder()
+    ///     .service_name("MyService")
+    ///     .region("us-east")
+    ///     .zone("us-east-1a")
+    ///     .build()
+    /// ```
+    pub fn region(mut self, region: impl Into<String>) -> Self {
+        self.region = Some(region.into());
+        self
+    }
+
+    /// Set the availability zone for this node
+    ///
+    /// Used for topology-aware routing to prefer nodes in the same zone.
+    /// Defaults to "global" if not set.
+    pub fn zone(mut self, zone: impl Into<String>) -> Self {
+        self.zone = Some(zone.into());
         self
     }
 
@@ -769,6 +824,8 @@ impl NodeBuilder {
         let node = Node {
             service_name,
             node_id,
+            region: self.region.unwrap_or_else(|| "global".to_string()),
+            zone: self.zone.unwrap_or_else(|| "global".to_string()),
             can_lead: self.can_lead,
             id_fallback: self.id_fallback,
             data: Arc::new(data),
@@ -798,6 +855,8 @@ impl Default for NodeBuilder {
 /// Build TransponderData for this node
 fn build_self_transponder_data(
     node_id: &str,
+    region: &str,
+    zone: &str,
     advertise_addresses: &[crate::mesh::AddressGroup],
     routes: &HashMap<String, &'static dyn crate::handler::Handler>,
 ) -> crate::mesh::TransponderData {
@@ -813,6 +872,8 @@ fn build_self_transponder_data(
 
     crate::mesh::TransponderData::builder()
         .node_id(node_id)
+        .region(region)
+        .zone(zone)
         .addresses(advertise_addresses.to_vec())
         .transports(transports)
         .codec("bincode") // Currently hardcoded

@@ -30,9 +30,14 @@ pub struct LeaveRequest {
 /// - What services it provides (routes)
 /// - What constraints it has (security, performance)
 /// - What special capabilities it has (forwarding, translation)
+/// - Topology information (region, zone) for routing decisions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransponderData {
     pub node_id: String,
+    /// Geographic region (e.g., "us-east", "eu-west", "global")
+    pub region: String,
+    /// Availability zone within region (e.g., "us-east-1a", "global")
+    pub zone: String,
     pub addresses: Vec<AddressGroup>,
     pub transports: Vec<String>,
     pub codecs: Vec<String>,
@@ -53,6 +58,8 @@ impl TransponderData {
 #[derive(Default)]
 pub struct TransponderDataBuilder {
     node_id: Option<String>,
+    region: Option<String>,
+    zone: Option<String>,
     addresses: Vec<AddressGroup>,
     transports: Vec<String>,
     codecs: Vec<String>,
@@ -69,6 +76,16 @@ impl TransponderDataBuilder {
 
     pub fn node_id(mut self, id: impl Into<String>) -> Self {
         self.node_id = Some(id.into());
+        self
+    }
+
+    pub fn region(mut self, region: impl Into<String>) -> Self {
+        self.region = Some(region.into());
+        self
+    }
+
+    pub fn zone(mut self, zone: impl Into<String>) -> Self {
+        self.zone = Some(zone.into());
         self
     }
 
@@ -130,6 +147,8 @@ impl TransponderDataBuilder {
     pub fn build(self) -> TransponderData {
         TransponderData {
             node_id: self.node_id.expect("node_id is required"),
+            region: self.region.unwrap_or_else(|| "global".to_string()),
+            zone: self.zone.unwrap_or_else(|| "global".to_string()),
             addresses: self.addresses,
             transports: self.transports,
             codecs: self.codecs,
