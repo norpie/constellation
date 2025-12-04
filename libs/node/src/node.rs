@@ -47,6 +47,7 @@ pub struct Node {
     region: String,
     zone: String,
     can_lead: bool,
+    global_constraints: crate::mesh::Constraint,
     id_fallback: Option<Arc<dyn Fn(String) -> String + Send + Sync>>,
     data: Arc<HashMap<TypeId, Box<dyn Any + Send + Sync>>>,
     routes: Arc<HashMap<String, &'static dyn Handler>>,
@@ -109,6 +110,11 @@ impl Node {
         &self.zone
     }
 
+    /// Get the global constraints
+    pub fn global_constraints(&self) -> &crate::mesh::Constraint {
+        &self.global_constraints
+    }
+
     /// Get the ID fallback strategy (if set)
     pub fn id_fallback(&self) -> Option<&Arc<dyn Fn(String) -> String + Send + Sync>> {
         self.id_fallback.as_ref()
@@ -157,6 +163,11 @@ impl StartableNode {
     /// Get the zone (delegates to inner Node)
     pub fn zone(&self) -> &str {
         self.node.zone()
+    }
+
+    /// Get the global constraints (delegates to inner Node)
+    pub fn global_constraints(&self) -> &crate::mesh::Constraint {
+        self.node.global_constraints()
     }
 
     /// Get the ID fallback strategy (delegates to inner Node)
@@ -208,6 +219,7 @@ impl StartableNode {
         let region = node.region.clone();
         let zone = node.zone.clone();
         let can_lead = node.can_lead;
+        let global_constraints = node.global_constraints.clone();
         let raft = node.raft.clone();
 
         let node = Arc::new(node);
@@ -280,7 +292,7 @@ impl StartableNode {
         }
 
         // 3. Bootstrap: join cluster or form new one
-        let self_data = build_self_transponder_data(&node_id, &region, &zone, &advertise_addresses, &routes);
+        let self_data = build_self_transponder_data(&node_id, &region, &zone, &advertise_addresses, &routes, &global_constraints);
         bootstrap_join(&bootstrap_peers, &self_data, &raft, can_lead).await?;
 
         // bootstrap_peers is dropped here (local variable goes out of scope after use)
@@ -383,9 +395,10 @@ pub struct NodeBuilder {
     routes: HashMap<String, &'static dyn Handler>,
     auto_discover: bool,
     listeners: Vec<(Box<dyn ListenerHandle>, String)>, // (listener, zone)
-    advertise_addresses: Vec<crate::mesh::AddressGroup>, // addresses to advertise in TransponderData
-    bootstrap_peers: Vec<(String, crate::mesh::AddressGroup)>, // (node_id, address_group)
+    advertise_addresses: Vec<crate::mesh::AdvertisedAddress>, // addresses to advertise in TransponderData
+    bootstrap_peers: Vec<(String, crate::mesh::AdvertisedAddress)>, // (node_id, address)
     scheduled_tasks: Vec<ScheduledTaskConfig>,
+    global_constraints: Option<crate::mesh::Constraint>,
 }
 
 impl NodeBuilder {
@@ -405,6 +418,7 @@ impl NodeBuilder {
             advertise_addresses: Vec::new(),
             bootstrap_peers: Vec::new(),
             scheduled_tasks: Vec::new(),
+            global_constraints: None,
         }
     }
 
@@ -471,6 +485,29 @@ impl NodeBuilder {
     /// Defaults to "global" if not set.
     pub fn zone(mut self, zone: impl Into<String>) -> Self {
         self.zone = Some(zone.into());
+        self
+    }
+
+    /// Set global constraints for this node
+    ///
+    /// Global constraints apply to all connections to/from this node.
+    /// Individual routes can override these with route-specific constraints.
+    ///
+    /// # Example
+    /// ```ignore
+    /// use constellation_node::mesh::{Constraint, ConnectionRules};
+    /// use constellation_fabric::Codec;
+    ///
+    /// Node::builder()
+    ///     .service_name("MyService")
+    ///     .global_constraints(
+    ///         Constraint::allow_all()
+    ///             .with_network("external", ConnectionRules::only("tls", Codec::Bincode))
+    ///     )
+    ///     .build()
+    /// ```
+    pub fn global_constraints(mut self, constraints: crate::mesh::Constraint) -> Self {
+        self.global_constraints = Some(constraints);
         self
     }
 
@@ -844,6 +881,7 @@ impl NodeBuilder {
             region: self.region.unwrap_or_else(|| "global".to_string()),
             zone: self.zone.unwrap_or_else(|| "global".to_string()),
             can_lead: self.can_lead,
+            global_constraints: self.global_constraints.unwrap_or_default(),
             id_fallback: self.id_fallback,
             data: Arc::new(data),
             routes: Arc::new(routes),
@@ -876,6 +914,7 @@ fn build_self_transponder_data(
     zone: &str,
     advertise_addresses: &[crate::mesh::AddressGroup],
     routes: &HashMap<String, &'static dyn crate::handler::Handler>,
+    global_constraints: &crate::mesh::Constraint,
 ) -> crate::mesh::TransponderData {
     let route_names: Vec<String> = routes.keys().cloned().collect();
 
@@ -895,6 +934,7 @@ fn build_self_transponder_data(
         .transports(transports)
         .codec("bincode") // Currently hardcoded
         .routes(route_names)
+        .global_constraints(global_constraints.clone())
         .capabilities(crate::mesh::Capabilities::basic())
         .build()
 }
