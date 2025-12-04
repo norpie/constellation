@@ -5,10 +5,17 @@ use crate::error::{Error, Result};
 /// Codec for serializing and deserializing messages
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Codec {
-    /// Binary serialization via bincode (default)
+    /// Binary serialization via bincode (default) - fast, compact
     #[default]
     Bincode,
-    // Future: Json, Protobuf, MessagePack, etc.
+    /// JSON serialization - human-readable, widely compatible
+    Json,
+    /// MessagePack serialization - compact binary, faster than JSON
+    MessagePack,
+    /// CBOR serialization - binary, good for constrained environments
+    Cbor,
+    /// Postcard serialization - embedded-friendly, very compact
+    Postcard,
 }
 
 impl Codec {
@@ -16,6 +23,10 @@ impl Codec {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Bincode => "bincode",
+            Self::Json => "json",
+            Self::MessagePack => "msgpack",
+            Self::Cbor => "cbor",
+            Self::Postcard => "postcard",
         }
     }
 
@@ -23,6 +34,18 @@ impl Codec {
     pub fn encode<T: Serialize>(&self, value: &T) -> Result<Vec<u8>> {
         match self {
             Self::Bincode => bincode::serialize(value).map_err(|e| Error::Codec(e.to_string())),
+            Self::Json => serde_json::to_vec(value).map_err(|e| Error::Codec(e.to_string())),
+            Self::MessagePack => {
+                rmp_serde::to_vec(value).map_err(|e| Error::Codec(e.to_string()))
+            }
+            Self::Cbor => {
+                let mut buf = Vec::new();
+                ciborium::into_writer(value, &mut buf).map_err(|e| Error::Codec(e.to_string()))?;
+                Ok(buf)
+            }
+            Self::Postcard => {
+                postcard::to_allocvec(value).map_err(|e| Error::Codec(e.to_string()))
+            }
         }
     }
 
@@ -30,6 +53,16 @@ impl Codec {
     pub fn decode<T: for<'de> Deserialize<'de>>(&self, bytes: &[u8]) -> Result<T> {
         match self {
             Self::Bincode => bincode::deserialize(bytes).map_err(|e| Error::Codec(e.to_string())),
+            Self::Json => serde_json::from_slice(bytes).map_err(|e| Error::Codec(e.to_string())),
+            Self::MessagePack => {
+                rmp_serde::from_slice(bytes).map_err(|e| Error::Codec(e.to_string()))
+            }
+            Self::Cbor => {
+                ciborium::from_reader(bytes).map_err(|e| Error::Codec(e.to_string()))
+            }
+            Self::Postcard => {
+                postcard::from_bytes(bytes).map_err(|e| Error::Codec(e.to_string()))
+            }
         }
     }
 }
