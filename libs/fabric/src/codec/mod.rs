@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Codec for serializing and deserializing messages
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum Codec {
     /// Binary serialization via bincode (default) - fast, compact
     #[default]
