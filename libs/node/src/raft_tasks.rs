@@ -10,8 +10,9 @@ use crate::mesh::{AddressBook, AddressBookCommand};
 use crate::rpc::RpcClient;
 use crate::scheduler::{Schedule, Scheduler, TaskContext};
 use constellation_fabric::Codec;
-use constellation_raft::RaftNode;
+use constellation_raft::{RaftNode, RequestVoteResponse};
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 /// Schedule Raft background tasks (election timeout + heartbeat + apply)
 ///
@@ -117,50 +118,74 @@ async fn election_timeout_task(ctx: TaskContext) {
 
     println!("[{}] Requesting votes from {} peers: {:?}", node_id, peers.len(), peers);
 
-    // Send vote requests to all peers
+    // Send vote requests concurrently - don't block on slow/dead nodes
+    let (tx, mut rx) = mpsc::channel::<(String, Option<RequestVoteResponse>)>(peers.len().max(1));
+
     for peer_id in peers {
-        println!("[{}] Sending vote request to {}", node_id, peer_id);
+        let rpc = rpc.clone();
+        let request = request.clone();
+        let tx = tx.clone();
+        let node_id = node_id.clone();
 
-        // Send vote request to peer
-        let response = match rpc.call_peer(&peer_id, "_raft.request_vote", &request) {
-            Ok(builder) => builder.await,
-            Err(e) => {
-                eprintln!(
-                    "election_timeout: Failed to serialize vote request for {}: {}",
-                    peer_id, e
-                );
-                continue;
-            }
-        };
+        tokio::spawn(async move {
+            let response = match rpc.call_peer(&peer_id, "_raft.request_vote", &request) {
+                Ok(builder) => builder.await,
+                Err(e) => {
+                    eprintln!(
+                        "election_timeout: Failed to serialize vote request for {}: {}",
+                        peer_id, e
+                    );
+                    let _ = tx.send((peer_id, None)).await;
+                    return;
+                }
+            };
 
-        match response {
-            Ok(resp) => {
-                let resp: constellation_raft::RequestVoteResponse = resp;
-                println!("[{}] Got vote response from {}: granted={}", node_id, peer_id, resp.vote_granted);
-                // Handle vote response
-                match raft.handle_request_vote_response(&peer_id, resp).await {
-                    Ok(constellation_raft::ElectionResult::Won) => {
-                        println!("[{}] Won election!", node_id);
-                        return;
-                    }
-                    Ok(constellation_raft::ElectionResult::Lost(term)) => {
-                        println!("[{}] Lost election (saw term {})", node_id, term);
-                        return;
-                    }
-                    Ok(constellation_raft::ElectionResult::StillVoting) => {
-                        println!("[{}] Still collecting votes...", node_id);
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "election_timeout: Failed to handle vote response from {}: {}",
-                            peer_id, e
-                        );
-                    }
+            match response {
+                Ok(resp) => {
+                    let _ = tx.send((peer_id, Some(resp))).await;
+                }
+                Err(e) => {
+                    println!("[{}] Vote request to {} failed: {}", node_id, peer_id, e);
+                    let _ = tx.send((peer_id, None)).await;
                 }
             }
+        });
+    }
+
+    // Drop sender so channel closes when all spawned tasks complete
+    drop(tx);
+
+    // Process responses as they arrive - return as soon as we win or lose
+    while let Some((peer_id, response)) = rx.recv().await {
+        // Abort if no longer candidate
+        if raft.state().await != constellation_raft::State::Candidate {
+            println!("[{}] No longer candidate, aborting", node_id);
+            return;
+        }
+
+        let Some(resp) = response else {
+            continue;
+        };
+
+        println!("[{}] Got vote response from {}: granted={}", node_id, peer_id, resp.vote_granted);
+
+        match raft.handle_request_vote_response(&peer_id, resp).await {
+            Ok(constellation_raft::ElectionResult::Won) => {
+                println!("[{}] Won election!", node_id);
+                return;
+            }
+            Ok(constellation_raft::ElectionResult::Lost(term)) => {
+                println!("[{}] Lost election (saw term {})", node_id, term);
+                return;
+            }
+            Ok(constellation_raft::ElectionResult::StillVoting) => {
+                println!("[{}] Still collecting votes...", node_id);
+            }
             Err(e) => {
-                // RPC failed - peer might be down, continue with other peers
-                println!("[{}] Vote request to {} failed: {}", node_id, peer_id, e);
+                eprintln!(
+                    "election_timeout: Failed to handle vote response from {}: {}",
+                    peer_id, e
+                );
             }
         }
     }
@@ -211,9 +236,10 @@ async fn heartbeat_task(ctx: TaskContext) {
         })
         .await;
 
-    // Send heartbeats to all peers
+    // Send heartbeats concurrently - fire and forget
+    // Don't await: if a peer is unreachable, RPC retries would block this task,
+    // causing subsequent heartbeats to be skipped and followers to timeout.
     for peer_id in peers {
-        // Check if peer needs a snapshot instead of AppendEntries
         let peer_next_index = raft.get_next_index(&peer_id).await;
 
         let needs_snapshot = match (peer_next_index, snapshot_last_index) {
@@ -221,13 +247,15 @@ async fn heartbeat_task(ctx: TaskContext) {
             _ => false,
         };
 
-        if needs_snapshot {
-            // Peer is too far behind - send InstallSnapshot
-            send_install_snapshot(&raft, &rpc, &peer_id).await;
-        } else {
-            // Normal case - send AppendEntries
-            send_append_entries(&raft, &rpc, &peer_id).await;
-        }
+        let raft = raft.clone();
+        let rpc = rpc.clone();
+        tokio::spawn(async move {
+            if needs_snapshot {
+                send_install_snapshot(&raft, &rpc, &peer_id).await;
+            } else {
+                send_append_entries(&raft, &rpc, &peer_id).await;
+            }
+        });
     }
 }
 

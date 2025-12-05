@@ -18,10 +18,22 @@ use tokio::sync::RwLock;
 async fn request_vote(
     req: RequestVoteRequest,
     raft: Data<RaftNode<AddressBook>>,
+    scheduler: Data<Scheduler>,
 ) -> Result<RequestVoteResponse, crate::error::Error> {
-    raft.handle_request_vote(req)
+    let resp = raft
+        .handle_request_vote(req)
         .await
-        .map_err(crate::error::Error::from)
+        .map_err(crate::error::Error::from)?;
+
+    // Reset election timeout when granting a vote (per Raft spec)
+    // This prevents the voter from immediately starting its own election
+    if resp.vote_granted {
+        if let Some(handle) = scheduler.handle_by_name("election_timeout").await {
+            handle.reset_now();
+        }
+    }
+
+    Ok(resp)
 }
 
 /// Built-in handler for Raft AppendEntries RPC
