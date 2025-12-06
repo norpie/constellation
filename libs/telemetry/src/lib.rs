@@ -29,11 +29,16 @@
 //! }
 //! ```
 
+pub mod collector;
 pub mod context;
 pub mod span;
 pub mod types;
 
 // Re-export commonly used types at crate root
+pub use collector::{
+    collect, collect_log, collect_metric, collect_span, drain, global_collector,
+    set_global_collector, BufferCollector, Collector, CollectorConfig,
+};
 pub use context::TelemetryContext;
 pub use span::{in_span, in_span_sync, Span, SpanGuard};
 pub use types::{
@@ -42,7 +47,6 @@ pub use types::{
 };
 
 // Future modules (not yet implemented):
-// pub mod collector;
 // pub mod wal;
 // pub mod spawn;
 // pub mod macros;

@@ -181,10 +181,10 @@ impl SpanGuard {
 
 impl Drop for SpanGuard {
     fn drop(&mut self) {
-        // Finish the span if not already finished
-        // In the future, this will send to the collector
-        let _entry = self.finish_inner();
-        // TODO: Send entry to collector when implemented
+        // Finish the span and send to collector
+        if let Some(entry) = self.finish_inner() {
+            crate::collector::collect_span(entry);
+        }
     }
 }
 
