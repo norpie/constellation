@@ -31,14 +31,22 @@
 //!     .execute()?;
 //! ```
 
+pub mod aggregation;
+pub mod config;
+pub mod error;
+pub mod key;
+pub mod query;
+pub mod retention;
+pub mod store;
+
+// Re-export main types
+pub use aggregation::{RollupEntry, RollupInterval};
+pub use config::{DatapadConfig, RetentionConfig, StorageMode};
+pub use error::{Error, Result};
+pub use key::PrimaryKey;
+pub use query::{QueryBuilder, QueryFilter};
+pub use retention::CleanupResult;
+pub use store::Datapad;
+
 // Re-export telemetry types for convenience
 pub use constellation_telemetry::types::*;
-
-// Future modules (not yet implemented):
-// pub mod store;
-// pub mod config;
-// pub mod key;
-// pub mod index;
-// pub mod query;
-// pub mod retention;
-// pub mod aggregation;

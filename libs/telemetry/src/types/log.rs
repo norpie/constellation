@@ -21,6 +21,25 @@ impl Level {
             Level::Error => "error",
         }
     }
+
+    pub fn as_u8(&self) -> u8 {
+        match self {
+            Level::Debug => 0,
+            Level::Info => 1,
+            Level::Warn => 2,
+            Level::Error => 3,
+        }
+    }
+
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Level::Debug),
+            1 => Some(Level::Info),
+            2 => Some(Level::Warn),
+            3 => Some(Level::Error),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for Level {
