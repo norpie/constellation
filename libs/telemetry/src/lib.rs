@@ -31,6 +31,8 @@
 
 pub mod collector;
 pub mod context;
+#[macro_use]
+pub mod macros;
 pub mod span;
 pub mod types;
 
@@ -49,4 +51,3 @@ pub use types::{
 // Future modules (not yet implemented):
 // pub mod wal;
 // pub mod spawn;
-// pub mod macros;
