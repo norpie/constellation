@@ -30,10 +30,12 @@
 //! ```
 
 pub mod context;
+pub mod span;
 pub mod types;
 
 // Re-export commonly used types at crate root
 pub use context::TelemetryContext;
+pub use span::{in_span, in_span_sync, Span, SpanGuard};
 pub use types::{
     current_timestamp_micros, CommonFields, EntryId, EntryType, Level, LogEntry, MetricEntry,
     MetricType, SpanEntry, SpanId, SpanStatus, TelemetryEntry, Timestamp, TraceId,
