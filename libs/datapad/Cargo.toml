@@ -1,0 +1,11 @@
+[package]
+name = "constellation-datapad"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+constellation-telemetry = { path = "../telemetry" }
+sled = "0.34"
+serde = { workspace = true }
+bincode = "2.0.0-rc.3"

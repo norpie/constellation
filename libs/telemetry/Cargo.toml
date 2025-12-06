@@ -1,0 +1,15 @@
+[package]
+name = "constellation-telemetry"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+bincode = "2.0.0-rc.3"
+ulid = { version = "1", features = ["serde"] }
+rand = "0.8"
+
+[dev-dependencies]
+serde_json = "1"
