@@ -15,10 +15,6 @@ use serde::{Deserialize, Serialize};
 // Types matching the node's _telemetry.scrape handler
 // ----------------------------------------------------------------------------
 
-/// Request for scraping telemetry (matches node's ScrapeRequest)
-#[derive(Debug, Serialize, Deserialize)]
-struct ScrapeRequest {}
-
 /// Response containing collected telemetry entries (matches node's ScrapeResponse)
 #[derive(Debug, Serialize, Deserialize)]
 struct ScrapeResponse {
@@ -84,10 +80,10 @@ pub async fn scrape_remote_nodes(ctx: TaskContext) {
         }
 
         // Call _telemetry.scrape on the node
-        let call_result = rpc.call_peer::<ScrapeRequest, ScrapeResponse>(
+        let call_result = rpc.call_peer::<(), ScrapeResponse>(
             &node_id,
             "_telemetry.scrape",
-            &ScrapeRequest {},
+            &(),
         );
 
         let builder = match call_result {

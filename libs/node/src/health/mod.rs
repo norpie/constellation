@@ -69,10 +69,6 @@ impl CheckResult {
     }
 }
 
-/// Request for health status endpoint
-#[derive(Debug, Serialize, Deserialize)]
-pub struct StatusRequest {}
-
 /// Response from health status endpoint
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StatusResponse {
@@ -81,10 +77,6 @@ pub struct StatusResponse {
     /// Individual check results by name
     pub checks: HashMap<String, CheckResult>,
 }
-
-/// Request for readiness endpoint
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ReadyRequest {}
 
 /// Response from readiness endpoint
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

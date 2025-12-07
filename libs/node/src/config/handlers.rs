@@ -31,10 +31,6 @@ pub struct ConfigResponse {
     pub error: Option<String>,
 }
 
-/// Empty request for handlers that don't need input
-#[derive(Debug, Deserialize)]
-pub struct EmptyRequest {}
-
 /// Get config value(s)
 ///
 /// If path is provided, returns the value at that path.
@@ -119,7 +115,6 @@ async fn config_schema(
 /// Reset config to defaults
 #[handler(route = "_config.reset")]
 async fn config_reset(
-    _req: EmptyRequest,
     config: Data<RwLock<Config>>,
 ) -> Result<ConfigResponse, crate::error::Error> {
     let mut cfg = config.write().await;

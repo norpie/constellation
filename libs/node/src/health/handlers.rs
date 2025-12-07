@@ -1,8 +1,6 @@
 //! Built-in handlers for health checks
 
-use crate::health::{
-    HealthRegistry, HealthStatus, ReadyRequest, ReadyResponse, StatusRequest, StatusResponse,
-};
+use crate::health::{HealthRegistry, HealthStatus, ReadyResponse, StatusResponse};
 use crate::handler;
 use crate::metric;
 use crate::Data;
@@ -15,7 +13,6 @@ use std::time::Instant;
 /// and `health_check_duration_ms` histogram when telemetry is enabled.
 #[handler(route = "_health.status")]
 async fn health_status(
-    _req: StatusRequest,
     registry: Data<HealthRegistry>,
 ) -> Result<StatusResponse, crate::error::Error> {
     let start = Instant::now();
@@ -42,7 +39,6 @@ async fn health_status(
 /// and `health_ready_duration_ms` histogram when telemetry is enabled.
 #[handler(route = "_health.ready")]
 async fn health_ready(
-    _req: ReadyRequest,
     registry: Data<HealthRegistry>,
 ) -> Result<ReadyResponse, crate::error::Error> {
     let start = Instant::now();

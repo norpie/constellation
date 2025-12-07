@@ -31,7 +31,4 @@ pub use router::{ResolvedTarget, Router, RoutingError};
 pub use scheduler::{
     OverlapPolicy, Schedule, Scheduler, TaskContext, TaskHandle, TaskId, TaskInfo, TaskStatus,
 };
-pub use health::{
-    CheckResult, HealthRegistry, HealthStatus, ReadyRequest, ReadyResponse, StatusRequest,
-    StatusResponse,
-};
+pub use health::{CheckResult, HealthRegistry, HealthStatus, ReadyResponse, StatusResponse};

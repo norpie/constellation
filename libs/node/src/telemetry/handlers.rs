@@ -5,10 +5,6 @@ use crate::Data;
 use constellation_telemetry::{BufferCollector, Collector, TelemetryEntry};
 use serde::{Deserialize, Serialize};
 
-/// Request for scraping telemetry (empty - just triggers drain)
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ScrapeRequest {}
-
 /// Response containing collected telemetry entries
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ScrapeResponse {
@@ -40,7 +36,6 @@ impl crate::rpc::ErrorResponder for ScrapeError {
 /// This is called by the telemetry service to collect telemetry from nodes.
 #[handler(route = "_telemetry.scrape")]
 async fn telemetry_scrape(
-    _req: ScrapeRequest,
     collector: Data<BufferCollector>,
 ) -> Result<ScrapeResponse, ScrapeError> {
     let entries = collector.drain();

@@ -473,9 +473,7 @@ async fn test_telemetry_context_flows_through_handlers() {
 
 #[tokio::test]
 async fn test_health_endpoints() {
-    use constellation_node::health::{
-        HealthStatus, ReadyRequest, ReadyResponse, StatusRequest, StatusResponse,
-    };
+    use constellation_node::health::{HealthStatus, ReadyResponse, StatusResponse};
 
     // Setup listener
     let listener = TcpTransportListener::bind("127.0.0.1:0".parse().unwrap())
@@ -510,8 +508,7 @@ async fn test_health_endpoints() {
 
     // Test _health.status
     {
-        let req = StatusRequest {};
-        let payload = codec.encode(&req).unwrap();
+        let payload = vec![]; // Empty payload - handler takes no request
         let header = constellation_node::rpc::RpcHeader {
             request_id: Uuid::new_v4(),
             route: "_health.status".to_string(),
@@ -552,8 +549,7 @@ async fn test_health_endpoints() {
 
     // Test _health.ready
     {
-        let req = ReadyRequest {};
-        let payload = codec.encode(&req).unwrap();
+        let payload = vec![]; // Empty payload - handler takes no request
         let header = constellation_node::rpc::RpcHeader {
             request_id: Uuid::new_v4(),
             route: "_health.ready".to_string(),
@@ -582,7 +578,7 @@ async fn test_health_endpoints() {
 
 #[tokio::test]
 async fn test_health_with_failing_check() {
-    use constellation_node::health::{HealthStatus, StatusRequest, StatusResponse};
+    use constellation_node::health::{HealthStatus, StatusResponse};
 
     // Setup listener
     let listener = TcpTransportListener::bind("127.0.0.1:0".parse().unwrap())
@@ -619,8 +615,7 @@ async fn test_health_with_failing_check() {
     let codec = Codec::Bincode;
 
     // Test _health.status returns degraded
-    let req = StatusRequest {};
-    let payload = codec.encode(&req).unwrap();
+    let payload = vec![]; // Empty payload - handler takes no request
     let header = constellation_node::rpc::RpcHeader {
         request_id: Uuid::new_v4(),
         route: "_health.status".to_string(),
