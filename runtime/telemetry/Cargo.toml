@@ -24,6 +24,9 @@ schemars.workspace = true
 # Error handling
 thiserror.workspace = true
 
+# Regex for content filters
+regex = "1"
+
 # Handler macro dependencies
 async-trait.workspace = true
 inventory = "0.3"

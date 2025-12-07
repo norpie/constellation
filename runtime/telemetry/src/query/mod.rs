@@ -47,9 +47,10 @@
 //! ```
 
 pub mod ast;
-
+mod executor;
 mod lexer;
 mod parser;
 
 pub use ast::*;
+pub use executor::{execute, execute_query, ExecuteError, QueryResult};
 pub use parser::{parse, ParseError};
