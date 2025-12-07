@@ -198,7 +198,12 @@ impl StartableNode {
             eprintln!("Warning: Failed to schedule Raft tasks: {}", e);
         }
 
-        // 5. Return the running node
+        // 5. Mark health registry as started
+        if let Some(registry) = node.extract::<crate::health::HealthRegistry>() {
+            registry.mark_started();
+        }
+
+        // 6. Return the running node
         // Caller can call node.shutdown() when they want to stop
         Ok(node)
     }

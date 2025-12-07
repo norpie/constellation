@@ -2,6 +2,7 @@ pub mod binding;
 pub mod config;
 pub mod error;
 pub mod handler;
+pub mod health;
 pub mod mesh;
 pub mod raft;
 pub mod router;
@@ -29,4 +30,8 @@ pub use rpc::{
 pub use router::{ResolvedTarget, Router, RoutingError};
 pub use scheduler::{
     OverlapPolicy, Schedule, Scheduler, TaskContext, TaskHandle, TaskId, TaskInfo, TaskStatus,
+};
+pub use health::{
+    CheckResult, HealthRegistry, HealthStatus, ReadyRequest, ReadyResponse, StatusRequest,
+    StatusResponse,
 };

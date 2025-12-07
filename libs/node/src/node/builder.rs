@@ -30,6 +30,7 @@ pub struct NodeBuilder {
     bootstrap_peers: Vec<(String, crate::mesh::AdvertisedAddress)>, // (node_id, address)
     scheduled_tasks: Vec<ScheduledTaskConfig>,
     global_constraints: Option<crate::mesh::Constraint>,
+    health_checks: Vec<(String, crate::health::CheckFn)>, // (name, check_fn)
 }
 
 impl NodeBuilder {
@@ -50,6 +51,7 @@ impl NodeBuilder {
             bootstrap_peers: Vec::new(),
             scheduled_tasks: Vec::new(),
             global_constraints: None,
+            health_checks: Vec::new(),
         }
     }
 
@@ -388,6 +390,37 @@ impl NodeBuilder {
         self
     }
 
+    /// Register a health check
+    ///
+    /// Health checks are run when `_health.status` or `_health.ready` is called.
+    /// A check function should return `Ok(())` if healthy, or `Err(message)` if unhealthy.
+    ///
+    /// # Example
+    /// ```text
+    /// Node::builder()
+    ///     .service_name("MyService")
+    ///     .health_check("database", || async {
+    ///         db.ping().await.map_err(|e| e.to_string())
+    ///     })
+    ///     .health_check("cache", || async {
+    ///         cache.ping().await.map_err(|e| e.to_string())
+    ///     })
+    ///     .build()
+    /// ```
+    pub fn health_check<F, Fut>(mut self, name: impl Into<String>, check: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = std::result::Result<(), String>> + Send + 'static,
+    {
+        use std::pin::Pin;
+        let check_fn: crate::health::CheckFn = Arc::new(move || {
+            let fut = check();
+            Box::pin(fut) as Pin<Box<dyn Future<Output = std::result::Result<(), String>> + Send>>
+        });
+        self.health_checks.push((name.into(), check_fn));
+        self
+    }
+
     /// Build the Node
     ///
     /// This will:
@@ -410,28 +443,34 @@ impl NodeBuilder {
             routes.insert(full_route, handler);
         }
 
-        // Auto-discover handlers via inventory if enabled
-        if self.auto_discover {
-            for registration in inventory::iter::<crate::handler::HandlerRegistration> {
-                // Use custom route if specified, otherwise construct from service name + method + version
-                let route = if let Some(custom_route) = registration.route {
-                    custom_route.to_string()
-                } else {
-                    format!(
-                        "{}.{}.v{}",
-                        service_name, registration.method, registration.version
-                    )
-                };
+        // Auto-discover handlers via inventory
+        // Framework handlers (routes starting with "_") are always registered
+        // User handlers are only registered when auto_discover is enabled
+        for registration in inventory::iter::<crate::handler::HandlerRegistration> {
+            // Use custom route if specified, otherwise construct from service name + method + version
+            let route = if let Some(custom_route) = registration.route {
+                custom_route.to_string()
+            } else {
+                format!(
+                    "{}.{}.v{}",
+                    service_name, registration.method, registration.version
+                )
+            };
 
-                // Skip if already registered (manual or earlier auto-discovered takes precedence)
-                if routes.contains_key(&route) {
-                    eprintln!(
-                        "Warning: Duplicate handler for route '{}' during auto-discovery, skipping",
-                        route
-                    );
-                } else {
-                    routes.insert(route, registration.handler);
-                }
+            // Framework handlers (routes starting with "_") are always registered
+            let is_framework_handler = route.starts_with('_');
+            if !is_framework_handler && !self.auto_discover {
+                continue;
+            }
+
+            // Skip if already registered (manual or earlier auto-discovered takes precedence)
+            if routes.contains_key(&route) {
+                eprintln!(
+                    "Warning: Duplicate handler for route '{}' during auto-discovery, skipping",
+                    route
+                );
+            } else {
+                routes.insert(route, registration.handler);
             }
         }
 
@@ -523,6 +562,16 @@ impl NodeBuilder {
                 Box::new(Data::new(crate::scheduler::NodeIdentity(node_id.clone()))),
             );
         }
+
+        // Create and register HealthRegistry with configured checks
+        let mut health_registry = crate::health::HealthRegistry::new();
+        for (name, check_fn) in self.health_checks {
+            health_registry.add_check(name, check_fn);
+        }
+        data.insert(
+            TypeId::of::<Data<crate::health::HealthRegistry>>(),
+            Box::new(Data::new(health_registry)),
+        );
 
         // Create shutdown channel
         let (shutdown_tx, _shutdown_rx) = watch::channel(false);

@@ -470,3 +470,202 @@ async fn test_telemetry_context_flows_through_handlers() {
         );
     }
 }
+
+#[tokio::test]
+async fn test_health_endpoints() {
+    use constellation_node::health::{
+        HealthStatus, ReadyRequest, ReadyResponse, StatusRequest, StatusResponse,
+    };
+
+    // Setup listener
+    let listener = TcpTransportListener::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Build node with custom health check
+    let node = Node::builder()
+        .service_name("HealthTest")
+        .id("health-node")
+        .auto_discover(false)
+        .health_check("always_ok", || async { Ok(()) })
+        .binding(
+            constellation_node::Binding::new(listener, "tcp")
+                .advertise("default", &addr.to_string()),
+        )
+        .build()
+        .unwrap();
+
+    // Spawn node runtime
+    tokio::spawn(async move {
+        let _ = node.start().await;
+    });
+
+    // Give node time to start
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Connect as client
+    let mut client = TcpTransport::connect(addr).await.unwrap();
+    let codec = Codec::Bincode;
+
+    // Test _health.status
+    {
+        let req = StatusRequest {};
+        let payload = codec.encode(&req).unwrap();
+        let header = constellation_node::rpc::RpcHeader {
+            request_id: Uuid::new_v4(),
+            route: "_health.status".to_string(),
+            trace_id: None,
+            parent_span_id: None,
+        };
+        let frame = constellation_node::rpc::pack_frame(&header, &payload).unwrap();
+
+        client.send(&frame).await.unwrap();
+        let response_frame = client.receive().await.unwrap();
+
+        let (_resp_header, resp_payload) =
+            constellation_node::rpc::parse_frame(&response_frame).unwrap();
+        let rpc_response: constellation_node::rpc::RpcResponse =
+            codec.decode(resp_payload).unwrap();
+
+        match rpc_response.result {
+            constellation_node::rpc::ResponseResult::Success(payload) => {
+                let status: StatusResponse = codec
+                    .decode(&payload)
+                    .expect("Failed to decode StatusResponse");
+                assert_eq!(status.status, HealthStatus::Healthy);
+                assert!(
+                    status.checks.contains_key("always_ok"),
+                    "Should have 'always_ok' check result"
+                );
+                assert!(status.checks["always_ok"].ok, "always_ok check should pass");
+            }
+            constellation_node::rpc::ResponseResult::Error { category, payload } => {
+                panic!(
+                    "Expected success response for _health.status, got error: {:?}, payload len: {}",
+                    category,
+                    payload.len()
+                );
+            }
+        }
+    }
+
+    // Test _health.ready
+    {
+        let req = ReadyRequest {};
+        let payload = codec.encode(&req).unwrap();
+        let header = constellation_node::rpc::RpcHeader {
+            request_id: Uuid::new_v4(),
+            route: "_health.ready".to_string(),
+            trace_id: None,
+            parent_span_id: None,
+        };
+        let frame = constellation_node::rpc::pack_frame(&header, &payload).unwrap();
+
+        client.send(&frame).await.unwrap();
+        let response_frame = client.receive().await.unwrap();
+
+        let (_resp_header, resp_payload) =
+            constellation_node::rpc::parse_frame(&response_frame).unwrap();
+        let rpc_response: constellation_node::rpc::RpcResponse =
+            codec.decode(resp_payload).unwrap();
+
+        match rpc_response.result {
+            constellation_node::rpc::ResponseResult::Success(payload) => {
+                let ready: ReadyResponse = codec.decode(&payload).unwrap();
+                assert!(ready.ready, "Node should be ready");
+            }
+            _ => panic!("Expected success response for _health.ready"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_health_with_failing_check() {
+    use constellation_node::health::{HealthStatus, StatusRequest, StatusResponse};
+
+    // Setup listener
+    let listener = TcpTransportListener::bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Build node with a failing health check
+    let node = Node::builder()
+        .service_name("HealthTest")
+        .id("health-fail-node")
+        .auto_discover(false)
+        .health_check("always_fail", || async {
+            Err("Database connection failed".to_string())
+        })
+        .health_check("always_ok", || async { Ok(()) })
+        .binding(
+            constellation_node::Binding::new(listener, "tcp")
+                .advertise("default", &addr.to_string()),
+        )
+        .build()
+        .unwrap();
+
+    // Spawn node runtime
+    tokio::spawn(async move {
+        let _ = node.start().await;
+    });
+
+    // Give node time to start
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Connect as client
+    let mut client = TcpTransport::connect(addr).await.unwrap();
+    let codec = Codec::Bincode;
+
+    // Test _health.status returns degraded
+    let req = StatusRequest {};
+    let payload = codec.encode(&req).unwrap();
+    let header = constellation_node::rpc::RpcHeader {
+        request_id: Uuid::new_v4(),
+        route: "_health.status".to_string(),
+        trace_id: None,
+        parent_span_id: None,
+    };
+    let frame = constellation_node::rpc::pack_frame(&header, &payload).unwrap();
+
+    client.send(&frame).await.unwrap();
+    let response_frame = client.receive().await.unwrap();
+
+    let (_resp_header, resp_payload) =
+        constellation_node::rpc::parse_frame(&response_frame).unwrap();
+    let rpc_response: constellation_node::rpc::RpcResponse = codec.decode(resp_payload).unwrap();
+
+    match rpc_response.result {
+        constellation_node::rpc::ResponseResult::Success(payload) => {
+            let status: StatusResponse = codec
+                .decode(&payload)
+                .expect("Failed to decode StatusResponse");
+            // Should be Degraded since one check is failing but not all
+            assert_eq!(
+                status.status,
+                HealthStatus::Degraded,
+                "Status should be Degraded when one check fails"
+            );
+            assert!(
+                !status.checks["always_fail"].ok,
+                "always_fail check should fail"
+            );
+            assert!(
+                status.checks["always_fail"]
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("Database"),
+                "Error message should be included"
+            );
+        }
+        constellation_node::rpc::ResponseResult::Error { category, payload } => {
+            panic!(
+                "Expected success response for _health.status, got error: {:?}, payload len: {}",
+                category,
+                payload.len()
+            );
+        }
+    }
+}
