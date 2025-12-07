@@ -350,8 +350,3 @@ impl Clone for Router {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    // Tests will be in libs/node/tests/router.rs for integration testing
-}
