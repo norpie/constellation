@@ -6,7 +6,7 @@ members = [
     "libs/*",
 
     # Running services
-    # "runtime/*",
+    "runtime/telemetry",
 
     # Example services
     "examples/*",

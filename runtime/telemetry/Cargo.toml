@@ -1,0 +1,21 @@
+[package]
+name = "constellation-telemetry-service"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Constellation crates
+constellation-node = { path = "../../libs/node" }
+constellation-fabric = { path = "../../libs/fabric" }
+constellation-telemetry = { path = "../../libs/telemetry" }
+constellation-datapad = { path = "../../libs/datapad" }
+
+# Async runtime
+tokio.workspace = true
+
+# Serialization
+serde.workspace = true
+
+# CLI/Config (for later)
+# clap = { version = "4", features = ["derive"] }
