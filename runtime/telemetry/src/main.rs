@@ -12,6 +12,7 @@ use constellation_node::{Binding, Node, Schedule};
 mod config;
 mod error;
 mod handlers;
+mod query;
 mod scraper;
 
 #[tokio::main]
