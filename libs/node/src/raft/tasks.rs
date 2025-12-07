@@ -5,11 +5,11 @@
 //! - Heartbeat: leader sends AppendEntries to all peers
 //! - Apply committed: applies committed log entries to the state machine
 
+use super::RAFT_LOG_CODEC;
 use crate::config::RaftConfig;
 use crate::mesh::{AddressBook, AddressBookCommand};
 use crate::rpc::RpcClient;
 use crate::scheduler::{Schedule, Scheduler, TaskContext};
-use constellation_fabric::Codec;
 use constellation_raft::{RaftNode, RequestVoteResponse};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -396,7 +396,7 @@ async fn apply_committed_task(ctx: TaskContext) {
         let index = start_index + i as u64;
 
         // Deserialize command from raw bytes (node crate handles codec)
-        let command: AddressBookCommand = match Codec::Bincode.decode(&entry.command) {
+        let command: AddressBookCommand = match RAFT_LOG_CODEC.decode(&entry.command) {
             Ok(cmd) => cmd,
             Err(e) => {
                 eprintln!(

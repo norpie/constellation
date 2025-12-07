@@ -1,4 +1,5 @@
 use crate::mesh::TransponderData;
+use crate::raft::RAFT_LOG_CODEC;
 use constellation_raft::{Result, StateMachine};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -157,14 +158,14 @@ impl StateMachine for AddressBook {
 
     async fn snapshot(&self) -> Result<Vec<u8>> {
         // Serialize the entire address book
-        constellation_fabric::Codec::Bincode
+        RAFT_LOG_CODEC
             .encode(&(&self.nodes, &self.route_index))
             .map_err(|e| constellation_raft::Error::Serialization(e.to_string()))
     }
 
     async fn restore(&mut self, snapshot: Vec<u8>) -> Result<()> {
         // Deserialize and replace state
-        let (nodes, route_index) = constellation_fabric::Codec::Bincode
+        let (nodes, route_index) = RAFT_LOG_CODEC
             .decode(&snapshot)
             .map_err(|e| constellation_raft::Error::Serialization(e.to_string()))?;
 

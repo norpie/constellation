@@ -2,8 +2,8 @@
 
 use crate::handler;
 use crate::mesh::{AddressBook, AddressBookCommand, LeaveRequest, MeshResponse, TransponderData};
+use crate::raft::RAFT_LOG_CODEC;
 use crate::Data;
-use constellation_fabric::Codec;
 use constellation_raft::RaftNode;
 
 /// Built-in handler for mesh join requests
@@ -38,7 +38,7 @@ async fn mesh_join(
 
     // Serialize the Join command
     let command = AddressBookCommand::Join(req.clone());
-    let bytes = Codec::Bincode
+    let bytes = RAFT_LOG_CODEC
         .encode(&command)
         .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
 
@@ -77,7 +77,7 @@ async fn mesh_leave(
 
     // Serialize the Leave command
     let command = AddressBookCommand::Leave(req.node_id);
-    let bytes = Codec::Bincode
+    let bytes = RAFT_LOG_CODEC
         .encode(&command)
         .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
 

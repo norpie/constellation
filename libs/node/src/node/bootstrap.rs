@@ -63,7 +63,7 @@ pub(crate) async fn bootstrap_join(
 
         // Now submit our Join command through the log
         let command = crate::mesh::AddressBookCommand::Join(self_data.clone());
-        let bytes = constellation_fabric::Codec::Bincode
+        let bytes = crate::raft::RAFT_LOG_CODEC
             .encode(&command)
             .map_err(|e| Error::Custom(format!("Failed to serialize join command: {}", e)))?;
         raft.submit_command(bytes).await?;
