@@ -3,12 +3,11 @@ pub mod config;
 pub mod error;
 pub mod handler;
 pub mod mesh;
-pub mod raft_tasks;
+pub mod raft;
 pub mod router;
 pub mod rpc;
 pub mod scheduler;
 
-mod builtin;
 mod node;
 
 // Re-export the derive macro

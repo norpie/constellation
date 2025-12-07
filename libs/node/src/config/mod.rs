@@ -4,6 +4,8 @@
 //! for performance, while also supporting dynamic introspection via
 //! serde for management routes.
 
+mod handlers;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

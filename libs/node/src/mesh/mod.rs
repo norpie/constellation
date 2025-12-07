@@ -1,6 +1,7 @@
 // Mesh discovery and transponder data types
 
 mod address_book;
+mod handlers;
 
 pub use address_book::{AddressBook, AddressBookCommand, AddressBookResponse};
 
