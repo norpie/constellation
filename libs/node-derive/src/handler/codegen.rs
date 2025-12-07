@@ -77,12 +77,15 @@ fn generate_decode(info: &HandlerInfo) -> TokenStream {
     let crate_path = get_crate_path();
 
     quote! {
-        let #request_param: #request_type = ::constellation_fabric::Codec::Bincode
-            .decode(&request.payload)
-            .map_err(|e| #crate_path::HandlerError {
-                category: #crate_path::ErrorCategory::ClientError,
-                payload: Vec::new(), // Empty error payload - decode errors are framework-level
-            })?;
+        let #request_param: #request_type = {
+            let _span = #crate_path::telemetry::Span::enter("deserialize");
+            ::constellation_fabric::Codec::Bincode
+                .decode(&request.payload)
+                .map_err(|e| #crate_path::HandlerError {
+                    category: #crate_path::ErrorCategory::ClientError,
+                    payload: Vec::new(), // Empty error payload - decode errors are framework-level
+                })?
+        };
     }
 }
 
@@ -156,11 +159,14 @@ fn generate_encode(info: &HandlerInfo) -> TokenStream {
     let crate_path = get_crate_path();
 
     quote! {
-        ::constellation_fabric::Codec::Bincode.encode(&response)
-            .map_err(|_| #crate_path::HandlerError {
-                category: #crate_path::ErrorCategory::ServerError,
-                payload: Vec::new(), // Failed to encode response - framework-level problem
-            })
+        {
+            let _span = #crate_path::telemetry::Span::enter("serialize");
+            ::constellation_fabric::Codec::Bincode.encode(&response)
+                .map_err(|_| #crate_path::HandlerError {
+                    category: #crate_path::ErrorCategory::ServerError,
+                    payload: Vec::new(), // Failed to encode response - framework-level problem
+                })
+        }
     }
 }
 

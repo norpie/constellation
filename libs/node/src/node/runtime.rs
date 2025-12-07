@@ -3,6 +3,8 @@
 use crate::error::{Error, Result};
 use crate::node::Node;
 use crate::scheduler::{Scheduler, SchedulerCommand, TaskId};
+use crate::telemetry::{BufferCollector, Span, TelemetryContext, TraceId};
+use crate::Data;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -204,15 +206,15 @@ impl StartableNode {
 
 /// Handle a single connection - receive requests, dispatch to handlers, send responses
 async fn handle_connection(mut transport: Box<dyn constellation_fabric::transport::Transport>, node: Arc<Node>) -> Result<()> {
-    // println!("[handle_connection] New connection on node {}", node.node_id);
+    // Try to get collector for telemetry (if telemetry is enabled)
+    let collector: Option<Data<BufferCollector>> = node.extract();
+
     loop {
         // Receive frame from transport
         let frame = transport.receive().await?;
-        // println!("[handle_connection] Received frame ({} bytes)", frame.len());
 
         // Parse RPC frame (our custom format with separate header/payload)
         let (header, payload) = crate::rpc::parse_frame(&frame)?;
-        // println!("[handle_connection] Route: {}", header.route);
 
         // Lookup handler for this route
         let handler = node
@@ -231,17 +233,57 @@ async fn handle_connection(mut transport: Box<dyn constellation_fabric::transpor
             payload: payload.to_vec(),
         };
 
-        // Execute handler and build ResponseResult
-        let result = match handler.call(&node, &request).await {
-            Ok(success_payload) => crate::rpc::ResponseResult::Success(success_payload),
-            Err(handler_err) => {
-                eprintln!(
-                    "Handler error for route {} (category: {:?})",
-                    header.route, handler_err.category
-                );
-                crate::rpc::ResponseResult::Error {
-                    category: handler_err.category,
-                    payload: handler_err.payload,
+        // Execute handler, optionally wrapped in telemetry context
+        let result = if let Some(ref collector) = collector {
+            // Create telemetry context from incoming trace (or generate fresh)
+            let trace_id = header.trace_id.clone().unwrap_or_else(TraceId::new);
+            let ctx = TelemetryContext::from_request(
+                node.service_name(),
+                node.node_id(),
+                trace_id,
+                header.parent_span_id.clone(),
+                collector.clone(),
+            );
+
+            // Execute handler within telemetry context
+            let node_clone = node.clone();
+            let route = header.route.clone();
+            ctx.scope(async move {
+                // Create span for handler execution
+                let span_name = format!("rpc.server/{}", route);
+                let mut span_guard = Span::enter(&span_name);
+                span_guard.set_tag("rpc.route", &route);
+
+                let result = match handler.call(&node_clone, &request).await {
+                    Ok(success_payload) => crate::rpc::ResponseResult::Success(success_payload),
+                    Err(handler_err) => {
+                        span_guard.set_error();
+                        span_guard.set_tag("rpc.error_category", format!("{:?}", handler_err.category));
+                        eprintln!(
+                            "Handler error for route {} (category: {:?})",
+                            route, handler_err.category
+                        );
+                        crate::rpc::ResponseResult::Error {
+                            category: handler_err.category,
+                            payload: handler_err.payload,
+                        }
+                    }
+                };
+                result
+            }).await
+        } else {
+            // No telemetry - execute handler directly
+            match handler.call(&node, &request).await {
+                Ok(success_payload) => crate::rpc::ResponseResult::Success(success_payload),
+                Err(handler_err) => {
+                    eprintln!(
+                        "Handler error for route {} (category: {:?})",
+                        header.route, handler_err.category
+                    );
+                    crate::rpc::ResponseResult::Error {
+                        category: handler_err.category,
+                        payload: handler_err.payload,
+                    }
                 }
             }
         };
