@@ -207,8 +207,9 @@ impl Datapad {
                 _ => continue,
             };
 
-            let entry: TelemetryEntry = bincode::deserialize(&value)
-                .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
+            let (entry, _): (TelemetryEntry, _) =
+                bincode::serde::decode_from_slice(&value, bincode::config::standard())
+                    .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
 
             if let TelemetryEntry::Metric(metric) = entry {
                 if metric.metric_type != MetricType::Histogram {
@@ -244,16 +245,19 @@ impl Datapad {
                 samples,
             ) {
                 let key = rollup_key(bucket_start, &service, &name);
-                let value = bincode::serialize(&rollup)
-                    .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
+                let value =
+                    bincode::serde::encode_to_vec(&rollup, bincode::config::standard())
+                        .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
 
                 // Merge with existing rollup if present
                 if let Some(existing) = rollup_tree.get(&key)? {
-                    let mut existing_rollup: RollupEntry = bincode::deserialize(&existing)
-                        .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
+                    let (mut existing_rollup, _): (RollupEntry, _) =
+                        bincode::serde::decode_from_slice(&existing, bincode::config::standard())
+                            .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
                     existing_rollup.merge(&rollup);
-                    let merged_value = bincode::serialize(&existing_rollup)
-                        .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
+                    let merged_value =
+                        bincode::serde::encode_to_vec(&existing_rollup, bincode::config::standard())
+                            .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
                     rollup_tree.insert(&key, merged_value)?;
                 } else {
                     rollup_tree.insert(&key, value)?;
@@ -295,8 +299,9 @@ impl Datapad {
                 continue;
             }
 
-            let rollup: RollupEntry = bincode::deserialize(&value)
-                .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
+            let (rollup, _): (RollupEntry, _) =
+                bincode::serde::decode_from_slice(&value, bincode::config::standard())
+                    .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
 
             // Filter by name
             if rollup.name != name {

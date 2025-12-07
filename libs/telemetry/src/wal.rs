@@ -236,7 +236,8 @@ impl Wal {
     /// Append an entry to the WAL
     pub fn append(&mut self, entry: &TelemetryEntry) -> WalResult<u64> {
         // Serialize entry
-        let data = bincode::serialize(entry).map_err(|e| WalError::Serialize(e.to_string()))?;
+        let data = bincode::serde::encode_to_vec(entry, bincode::config::standard())
+            .map_err(|e| WalError::Serialize(e.to_string()))?;
 
         let length = data.len() as u32;
         let checksum = crc32(&data);
@@ -351,8 +352,9 @@ impl WalReader {
         }
 
         // Deserialize
-        let entry: TelemetryEntry =
-            bincode::deserialize(&data).map_err(|e| WalError::Deserialize(e.to_string()))?;
+        let (entry, _): (TelemetryEntry, _) =
+            bincode::serde::decode_from_slice(&data, bincode::config::standard())
+                .map_err(|e| WalError::Deserialize(e.to_string()))?;
 
         Ok(Some(entry))
     }

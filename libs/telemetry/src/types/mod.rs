@@ -180,8 +180,9 @@ mod tests {
         let entry: TelemetryEntry = log.into();
 
         // Bincode round-trip
-        let bytes = bincode::serialize(&entry).unwrap();
-        let deserialized: TelemetryEntry = bincode::deserialize(&bytes).unwrap();
+        let bytes = bincode::serde::encode_to_vec(&entry, bincode::config::standard()).unwrap();
+        let (deserialized, _): (TelemetryEntry, _) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
         assert_eq!(deserialized.entry_type(), EntryType::Log);
         assert_eq!(deserialized.service(), "auth");
     }

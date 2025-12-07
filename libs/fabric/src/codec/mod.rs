@@ -22,7 +22,8 @@ impl Codec {
     /// Encode a value into bytes
     pub fn encode<T: Serialize>(&self, value: &T) -> Result<Vec<u8>> {
         match self {
-            Self::Bincode => bincode::serialize(value).map_err(|e| Error::Codec(e.to_string())),
+            Self::Bincode => bincode::serde::encode_to_vec(value, bincode::config::standard())
+                .map_err(|e| Error::Codec(e.to_string())),
             Self::Json => serde_json::to_vec(value).map_err(|e| Error::Codec(e.to_string())),
             Self::MessagePack => {
                 rmp_serde::to_vec(value).map_err(|e| Error::Codec(e.to_string()))
@@ -41,7 +42,9 @@ impl Codec {
     /// Decode bytes into a value
     pub fn decode<T: for<'de> Deserialize<'de>>(&self, bytes: &[u8]) -> Result<T> {
         match self {
-            Self::Bincode => bincode::deserialize(bytes).map_err(|e| Error::Codec(e.to_string())),
+            Self::Bincode => bincode::serde::decode_from_slice(bytes, bincode::config::standard())
+                .map(|(v, _)| v)
+                .map_err(|e| Error::Codec(e.to_string())),
             Self::Json => serde_json::from_slice(bytes).map_err(|e| Error::Codec(e.to_string())),
             Self::MessagePack => {
                 rmp_serde::from_slice(bytes).map_err(|e| Error::Codec(e.to_string()))

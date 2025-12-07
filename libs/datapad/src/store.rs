@@ -225,12 +225,15 @@ impl Datapad {
 
 /// Serialize a telemetry entry to bytes using bincode.
 fn serialize_entry(entry: &TelemetryEntry) -> Result<Vec<u8>> {
-    bincode::serialize(entry).map_err(|e| Error::Serialization(e.to_string()))
+    bincode::serde::encode_to_vec(entry, bincode::config::standard())
+        .map_err(|e| Error::Serialization(e.to_string()))
 }
 
 /// Deserialize a telemetry entry from bytes using bincode.
 fn deserialize_entry(bytes: &[u8]) -> Result<TelemetryEntry> {
-    bincode::deserialize(bytes).map_err(|e| Error::Serialization(e.to_string()))
+    bincode::serde::decode_from_slice(bytes, bincode::config::standard())
+        .map(|(v, _)| v)
+        .map_err(|e| Error::Serialization(e.to_string()))
 }
 
 /// Separator byte between index value and primary key in composite index keys.
