@@ -33,6 +33,7 @@ pub mod collector;
 pub mod context;
 #[macro_use]
 pub mod macros;
+pub mod spawn;
 pub mod span;
 pub mod types;
 
@@ -42,6 +43,7 @@ pub use collector::{
     set_global_collector, BufferCollector, Collector, CollectorConfig,
 };
 pub use context::TelemetryContext;
+pub use spawn::{spawn, spawn_blocking, spawn_blocking_with_context, spawn_with_context};
 pub use span::{in_span, in_span_sync, Span, SpanGuard};
 pub use types::{
     current_timestamp_micros, CommonFields, EntryId, EntryType, Level, LogEntry, MetricEntry,
@@ -50,4 +52,3 @@ pub use types::{
 
 // Future modules (not yet implemented):
 // pub mod wal;
-// pub mod spawn;
