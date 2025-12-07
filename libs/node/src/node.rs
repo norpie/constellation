@@ -873,8 +873,6 @@ impl NodeBuilder {
         // Create shutdown channel
         let (shutdown_tx, _shutdown_rx) = watch::channel(false);
 
-        // TODO: Register built-in handlers (_mesh.*, _raft.*, etc.)
-
         let node = Node {
             service_name,
             node_id,
