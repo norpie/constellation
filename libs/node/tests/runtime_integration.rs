@@ -1,5 +1,6 @@
 // Integration tests for node runtime
 
+use constellation_fabric::channel::Channel;
 use constellation_fabric::Codec;
 use constellation_fabric::transport::{TcpTransport, TcpTransportListener, Transport};
 use constellation_node::mesh::{AddressBook, AddressBookCommand, AdvertisedAddress, Capabilities, TransponderData};
@@ -74,32 +75,27 @@ async fn test_basic_rpc_flow() {
     // Give node time to start
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Connect as client
-    let mut client = TcpTransport::connect(addr).await.unwrap();
+    // Connect as client using Channel
+    let mut channel = Channel::tcp(addr, Codec::Bincode).await.unwrap();
 
     // Build request
-    let codec = Codec::Bincode;
     let add_req = AddRequest { a: 5, b: 3 };
-    let payload = codec.encode(&add_req).unwrap();
+    let payload = channel.codec().encode(&add_req).unwrap();
 
-    // Pack RPC frame
+    // Build RPC header
     let header = constellation_node::rpc::RpcHeader {
         request_id: Uuid::new_v4(),
         route: "MathService.add.v1".to_string(),
         trace_id: None,
         parent_span_id: None,
     };
-    let frame = constellation_node::rpc::pack_frame(&header, &payload).unwrap();
 
-    // Send request
-    client.send(&frame).await.unwrap();
+    // Send framed request
+    channel.send_framed(&header, &payload).await.unwrap();
 
-    // Receive response
-    let response_frame = client.receive().await.unwrap();
-
-    // Parse response frame
-    let (response_header, response_payload) =
-        constellation_node::rpc::parse_frame(&response_frame).unwrap();
+    // Receive framed response
+    let (response_header, response_payload): (constellation_node::rpc::RpcHeader, Vec<u8>) =
+        channel.receive_framed().await.unwrap();
 
     // Verify header
     assert_eq!(response_header.request_id, header.request_id);
@@ -107,13 +103,13 @@ async fn test_basic_rpc_flow() {
 
     // Decode RpcResponse
     use constellation_node::rpc::{ResponseResult, RpcResponse};
-    let rpc_response: RpcResponse = codec.decode(response_payload).unwrap();
+    let rpc_response: RpcResponse = channel.codec().decode(&response_payload).unwrap();
     assert_eq!(rpc_response.request_id, header.request_id);
 
     // Extract success payload
     match rpc_response.result {
         ResponseResult::Success(payload) => {
-            let response: AddResponse = codec.decode(&payload).unwrap();
+            let response: AddResponse = channel.codec().decode(&payload).unwrap();
             assert_eq!(response.result, 8);
         }
         ResponseResult::Error { category, payload: _ } => {
@@ -147,32 +143,27 @@ async fn test_error_response() {
     // Give node time to start
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Connect as client
-    let mut client = TcpTransport::connect(addr).await.unwrap();
+    // Connect as client using Channel
+    let mut channel = Channel::tcp(addr, Codec::Bincode).await.unwrap();
 
     // Build request
-    let codec = Codec::Bincode;
     let add_req = AddRequest { a: 5, b: 3 };
-    let payload = codec.encode(&add_req).unwrap();
+    let payload = channel.codec().encode(&add_req).unwrap();
 
-    // Pack RPC frame
+    // Build RPC header
     let header = constellation_node::rpc::RpcHeader {
         request_id: Uuid::new_v4(),
         route: "MathService.failing.v1".to_string(),
         trace_id: None,
         parent_span_id: None,
     };
-    let frame = constellation_node::rpc::pack_frame(&header, &payload).unwrap();
 
-    // Send request
-    client.send(&frame).await.unwrap();
+    // Send framed request
+    channel.send_framed(&header, &payload).await.unwrap();
 
-    // Receive response
-    let response_frame = client.receive().await.unwrap();
-
-    // Parse response frame
-    let (response_header, response_payload) =
-        constellation_node::rpc::parse_frame(&response_frame).unwrap();
+    // Receive framed response
+    let (response_header, response_payload): (constellation_node::rpc::RpcHeader, Vec<u8>) =
+        channel.receive_framed().await.unwrap();
 
     // Verify header
     assert_eq!(response_header.request_id, header.request_id);
@@ -180,7 +171,7 @@ async fn test_error_response() {
 
     // Decode RpcResponse
     use constellation_node::rpc::{ErrorCategory, ResponseResult, RpcResponse};
-    let rpc_response: RpcResponse = codec.decode(response_payload).unwrap();
+    let rpc_response: RpcResponse = channel.codec().decode(&response_payload).unwrap();
     assert_eq!(rpc_response.request_id, header.request_id);
 
     // Extract error payload
@@ -193,7 +184,7 @@ async fn test_error_response() {
             assert!(matches!(category, ErrorCategory::ServerError));
 
             // Decode error
-            let error: TestError = codec.decode(&payload).unwrap();
+            let error: TestError = channel.codec().decode(&payload).unwrap();
             assert_eq!(error.0, "Intentional test failure");
         }
     }
@@ -372,9 +363,11 @@ async fn test_telemetry_context_flows_through_handlers() {
     // Give node time to start
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Build and send request with trace context
+    // Build and send request with trace context using Channel
     let trace_id = constellation_telemetry::TraceId::new();
     let span_id = constellation_telemetry::SpanId::new();
+
+    let mut channel = Channel::tcp(addr, Codec::Bincode).await.unwrap();
 
     let header = constellation_node::rpc::RpcHeader {
         request_id: Uuid::new_v4(),
@@ -383,26 +376,23 @@ async fn test_telemetry_context_flows_through_handlers() {
         parent_span_id: Some(span_id.clone()),
     };
 
-    let payload = Codec::Bincode
+    let payload = channel.codec()
         .encode(&AddRequest { a: 10, b: 20 })
         .unwrap();
-    let frame = constellation_node::rpc::pack_frame(&header, &payload).unwrap();
 
-    // Send request
-    let mut client = TcpTransport::connect(addr).await.unwrap();
-    client.send(&frame).await.unwrap();
+    // Send framed request
+    channel.send_framed(&header, &payload).await.unwrap();
 
-    // Receive response
-    let response_frame = client.receive().await.unwrap();
-    let (_resp_header, resp_payload) =
-        constellation_node::rpc::parse_frame(&response_frame).unwrap();
+    // Receive framed response
+    let (_resp_header, resp_payload): (constellation_node::rpc::RpcHeader, Vec<u8>) =
+        channel.receive_framed().await.unwrap();
     let response: constellation_node::rpc::RpcResponse =
-        Codec::Bincode.decode(resp_payload).unwrap();
+        channel.codec().decode(&resp_payload).unwrap();
 
     // Verify response succeeded
     match response.result {
         constellation_node::rpc::ResponseResult::Success(payload) => {
-            let add_response: AddResponse = Codec::Bincode.decode(&payload).unwrap();
+            let add_response: AddResponse = channel.codec().decode(&payload).unwrap();
             assert_eq!(add_response.result, 30);
         }
         _ => panic!("Expected success response"),
@@ -502,9 +492,8 @@ async fn test_health_endpoints() {
     // Give node time to start
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Connect as client
-    let mut client = TcpTransport::connect(addr).await.unwrap();
-    let codec = Codec::Bincode;
+    // Connect as client using Channel
+    let mut channel = Channel::tcp(addr, Codec::Bincode).await.unwrap();
 
     // Test _health.status
     {
@@ -515,19 +504,16 @@ async fn test_health_endpoints() {
             trace_id: None,
             parent_span_id: None,
         };
-        let frame = constellation_node::rpc::pack_frame(&header, &payload).unwrap();
 
-        client.send(&frame).await.unwrap();
-        let response_frame = client.receive().await.unwrap();
-
-        let (_resp_header, resp_payload) =
-            constellation_node::rpc::parse_frame(&response_frame).unwrap();
+        channel.send_framed(&header, &payload).await.unwrap();
+        let (_resp_header, resp_payload): (constellation_node::rpc::RpcHeader, Vec<u8>) =
+            channel.receive_framed().await.unwrap();
         let rpc_response: constellation_node::rpc::RpcResponse =
-            codec.decode(resp_payload).unwrap();
+            channel.codec().decode(&resp_payload).unwrap();
 
         match rpc_response.result {
             constellation_node::rpc::ResponseResult::Success(payload) => {
-                let status: StatusResponse = codec
+                let status: StatusResponse = channel.codec()
                     .decode(&payload)
                     .expect("Failed to decode StatusResponse");
                 assert_eq!(status.status, HealthStatus::Healthy);
@@ -556,19 +542,16 @@ async fn test_health_endpoints() {
             trace_id: None,
             parent_span_id: None,
         };
-        let frame = constellation_node::rpc::pack_frame(&header, &payload).unwrap();
 
-        client.send(&frame).await.unwrap();
-        let response_frame = client.receive().await.unwrap();
-
-        let (_resp_header, resp_payload) =
-            constellation_node::rpc::parse_frame(&response_frame).unwrap();
+        channel.send_framed(&header, &payload).await.unwrap();
+        let (_resp_header, resp_payload): (constellation_node::rpc::RpcHeader, Vec<u8>) =
+            channel.receive_framed().await.unwrap();
         let rpc_response: constellation_node::rpc::RpcResponse =
-            codec.decode(resp_payload).unwrap();
+            channel.codec().decode(&resp_payload).unwrap();
 
         match rpc_response.result {
             constellation_node::rpc::ResponseResult::Success(payload) => {
-                let ready: ReadyResponse = codec.decode(&payload).unwrap();
+                let ready: ReadyResponse = channel.codec().decode(&payload).unwrap();
                 assert!(ready.ready, "Node should be ready");
             }
             _ => panic!("Expected success response for _health.ready"),
@@ -610,9 +593,8 @@ async fn test_health_with_failing_check() {
     // Give node time to start
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Connect as client
-    let mut client = TcpTransport::connect(addr).await.unwrap();
-    let codec = Codec::Bincode;
+    // Connect as client using Channel
+    let mut channel = Channel::tcp(addr, Codec::Bincode).await.unwrap();
 
     // Test _health.status returns degraded
     let payload = vec![]; // Empty payload - handler takes no request
@@ -622,18 +604,15 @@ async fn test_health_with_failing_check() {
         trace_id: None,
         parent_span_id: None,
     };
-    let frame = constellation_node::rpc::pack_frame(&header, &payload).unwrap();
 
-    client.send(&frame).await.unwrap();
-    let response_frame = client.receive().await.unwrap();
-
-    let (_resp_header, resp_payload) =
-        constellation_node::rpc::parse_frame(&response_frame).unwrap();
-    let rpc_response: constellation_node::rpc::RpcResponse = codec.decode(resp_payload).unwrap();
+    channel.send_framed(&header, &payload).await.unwrap();
+    let (_resp_header, resp_payload): (constellation_node::rpc::RpcHeader, Vec<u8>) =
+        channel.receive_framed().await.unwrap();
+    let rpc_response: constellation_node::rpc::RpcResponse = channel.codec().decode(&resp_payload).unwrap();
 
     match rpc_response.result {
         constellation_node::rpc::ResponseResult::Success(payload) => {
-            let status: StatusResponse = codec
+            let status: StatusResponse = channel.codec()
                 .decode(&payload)
                 .expect("Failed to decode StatusResponse");
             // Should be Degraded since one check is failing but not all

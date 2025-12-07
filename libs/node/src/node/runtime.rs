@@ -5,6 +5,8 @@ use crate::node::Node;
 use crate::scheduler::{Scheduler, SchedulerCommand, TaskId};
 use crate::telemetry::{BufferCollector, Span, TelemetryContext, TraceId};
 use crate::Data;
+use crate::rpc::DEFAULT_CODEC;
+use constellation_fabric::channel::Channel;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -210,16 +212,17 @@ impl StartableNode {
 }
 
 /// Handle a single connection - receive requests, dispatch to handlers, send responses
-async fn handle_connection(mut transport: Box<dyn constellation_fabric::transport::Transport>, node: Arc<Node>) -> Result<()> {
+async fn handle_connection(transport: Box<dyn constellation_fabric::transport::Transport>, node: Arc<Node>) -> Result<()> {
+    // Wrap transport in a Channel with default codec
+    let mut channel = Channel::from_transport_boxed(transport, DEFAULT_CODEC);
+
     // Try to get collector for telemetry (if telemetry is enabled)
     let collector: Option<Data<BufferCollector>> = node.extract();
 
     loop {
-        // Receive frame from transport
-        let frame = transport.receive().await?;
-
-        // Parse RPC frame (our custom format with separate header/payload)
-        let (header, payload) = crate::rpc::parse_frame(&frame)?;
+        // Receive framed message (header + payload)
+        let (header, payload): (crate::rpc::RpcHeader, Vec<u8>) =
+            channel.receive_framed().await?;
 
         // Lookup handler for this route
         let handler = node
@@ -235,7 +238,7 @@ async fn handle_connection(mut transport: Box<dyn constellation_fabric::transpor
         let request = crate::rpc::RpcRequest {
             request_id: header.request_id,
             route: header.route.clone(),
-            payload: payload.to_vec(),
+            payload,
         };
 
         // Execute handler, optionally wrapped in telemetry context
@@ -299,21 +302,21 @@ async fn handle_connection(mut transport: Box<dyn constellation_fabric::transpor
             result,
         };
 
-        // Serialize entire RpcResponse
-        let response_payload = constellation_fabric::Codec::Bincode
+        // Serialize RpcResponse as payload
+        let response_payload = channel
+            .codec()
             .encode(&response)
             .map_err(|e| Error::Serialization(e.to_string()))?;
 
-        // Build response frame (propagate trace context from request)
+        // Build response header (propagate trace context from request)
         let response_header = crate::rpc::RpcHeader {
             request_id: header.request_id,
             route: header.route,
             trace_id: header.trace_id,
             parent_span_id: header.parent_span_id,
         };
-        let response_frame = crate::rpc::pack_frame(&response_header, &response_payload)?;
 
-        // Send response
-        transport.send(&response_frame).await?;
+        // Send framed response
+        channel.send_framed(&response_header, &response_payload).await?;
     }
 }

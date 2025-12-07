@@ -2,29 +2,35 @@
 //
 // ## Wire Protocol
 //
-// To avoid double-serialization overhead, we use a custom frame format:
+// Uses fabric's Channel with framed messages:
+// - `channel.send_framed(header, payload)` for requests
+// - `channel.receive_framed()` for responses
 //
+// Frame format (handled by Channel):
 // ```
 // [header_len: u32][header_bytes: ...][payload_bytes: ...]
 // ```
 //
-// Where:
-// - `header_len`: 4-byte big-endian u32 indicating length of header_bytes
-// - `header_bytes`: Serialized RpcHeader (request_id + route)
-// - `payload_bytes`: Already-serialized user request payload
-//
-// This avoids the overhead of serializing Vec<u8> within RpcRequest.
-// Channel provides outer framing; this is inner framing for efficiency.
+// The codec is bound to the Channel at connection time. Currently hardcoded
+// to Bincode, but will be negotiated in the future.
 
 use crate::config::Config;
 use crate::telemetry::{Span, TelemetryContext};
 use crate::Data;
+use constellation_fabric::channel::Channel;
+use constellation_fabric::Codec;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use uuid::Uuid;
+
+/// Default codec for RPC communication.
+///
+/// Currently hardcoded to Bincode. In the future, this will be negotiated
+/// at connection establishment time.
+pub(crate) const DEFAULT_CODEC: Codec = Codec::Bincode;
 
 /// Backoff strategy for retries
 #[derive(Debug, Clone)]
@@ -133,10 +139,7 @@ pub struct HandlerError {
 /// RPC header containing metadata (for wire protocol efficiency)
 ///
 /// This is serialized separately from the payload to avoid nested Vec<u8> serialization.
-///
-/// **Note**: This is an internal type exposed for testing. The API is unstable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[doc(hidden)]
 pub struct RpcHeader {
     pub request_id: Uuid,
     pub route: String,
@@ -144,63 +147,6 @@ pub struct RpcHeader {
     pub trace_id: Option<constellation_telemetry::TraceId>,
     /// Parent span ID for linking child spans to parents
     pub parent_span_id: Option<constellation_telemetry::SpanId>,
-}
-
-/// Pack an RPC frame for transmission
-///
-/// Creates a frame with format: [header_len: u32][header_bytes][payload_bytes]
-/// This avoids double-serialization of the payload.
-///
-/// **Note**: This is an internal function exposed for testing. The API is unstable.
-#[doc(hidden)]
-pub fn pack_frame(header: &RpcHeader, payload: &[u8]) -> crate::Result<Vec<u8>> {
-    // Serialize header
-    let header_bytes = constellation_fabric::Codec::Bincode
-        .encode(header)
-        .map_err(|e| crate::Error::Serialization(e.to_string()))?;
-
-    // Calculate total frame size
-    let header_len = header_bytes.len() as u32;
-    let total_len = 4 + header_bytes.len() + payload.len();
-
-    // Build frame
-    let mut frame = Vec::with_capacity(total_len);
-    frame.extend_from_slice(&header_len.to_be_bytes());
-    frame.extend_from_slice(&header_bytes);
-    frame.extend_from_slice(payload);
-
-    Ok(frame)
-}
-
-/// Parse an RPC frame received from the wire
-///
-/// Returns the deserialized header and a reference to the payload bytes.
-///
-/// **Note**: This is an internal function exposed for testing. The API is unstable.
-#[doc(hidden)]
-pub fn parse_frame(frame: &[u8]) -> crate::Result<(RpcHeader, &[u8])> {
-    // Read header length
-    if frame.len() < 4 {
-        return Err(crate::Error::Custom("Frame too short".to_string()));
-    }
-
-    let header_len = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
-
-    // Validate frame length
-    if frame.len() < 4 + header_len {
-        return Err(crate::Error::Custom("Incomplete frame".to_string()));
-    }
-
-    // Deserialize header
-    let header_bytes = &frame[4..4 + header_len];
-    let header: RpcHeader = constellation_fabric::Codec::Bincode
-        .decode(header_bytes)
-        .map_err(|e| crate::Error::Serialization(e.to_string()))?;
-
-    // Extract payload
-    let payload = &frame[4 + header_len..];
-
-    Ok((header, payload))
 }
 
 /// Client for making outbound RPC calls
@@ -240,7 +186,7 @@ impl RpcClient {
         Resp: DeserializeOwned,
     {
         // Serialize immediately - more efficient than cloning the request
-        let payload = constellation_fabric::Codec::Bincode
+        let payload = DEFAULT_CODEC
             .encode(request)
             .map_err(|e| crate::Error::Serialization(e.to_string()))?;
 
@@ -275,7 +221,7 @@ impl RpcClient {
         Resp: DeserializeOwned,
     {
         // Serialize immediately
-        let payload = constellation_fabric::Codec::Bincode
+        let payload = DEFAULT_CODEC
             .encode(request)
             .map_err(|e| crate::Error::Serialization(e.to_string()))?;
 
@@ -554,7 +500,7 @@ where
                 )))
             })?;
 
-        let mut transport = constellation_fabric::transport::TcpTransport::connect(addr)
+        let mut channel = Channel::tcp(addr, DEFAULT_CODEC)
             .await
             .map_err(|e| {
                 span_guard.set_error();
@@ -574,14 +520,9 @@ where
             trace_id,
             parent_span_id,
         };
-        let frame = pack_frame(&header, payload).map_err(|e| {
-            span_guard.set_error();
-            AttemptError::Fatal(e)
-        })?;
 
-        use constellation_fabric::transport::Transport;
-        transport
-            .send(&frame)
+        channel
+            .send_framed(&header, payload)
             .await
             .map_err(|e| {
                 span_guard.set_error();
@@ -589,33 +530,28 @@ where
             })?;
 
         // 4. Receive response (network errors are retryable)
-        let response_frame = transport
-            .receive()
+        let (_response_header, response_payload): (RpcHeader, Vec<u8>) = channel
+            .receive_framed()
             .await
             .map_err(|e| {
                 span_guard.set_error();
                 AttemptError::Retryable(e.into())
             })?;
 
-        // 5. Parse response frame
-        let (_response_header, response_payload) =
-            parse_frame(&response_frame).map_err(|e| {
-                span_guard.set_error();
-                AttemptError::Fatal(e)
-            })?;
-
-        // 6. Deserialize RpcResponse from payload
-        let response: RpcResponse = constellation_fabric::Codec::Bincode
-            .decode(response_payload)
+        // 5. Deserialize RpcResponse from payload
+        let response: RpcResponse = channel
+            .codec()
+            .decode(&response_payload)
             .map_err(|e| {
                 span_guard.set_error();
                 AttemptError::Fatal(crate::Error::Serialization(e.to_string()))
             })?;
 
-        // 7. Handle response result
+        // 6. Handle response result
         match response.result {
             ResponseResult::Success(payload) => {
-                let result: Resp = constellation_fabric::Codec::Bincode
+                let result: Resp = channel
+                    .codec()
                     .decode(&payload)
                     .map_err(|e| {
                         span_guard.set_error();
@@ -626,7 +562,8 @@ where
             ResponseResult::Error { category, payload } => {
                 span_guard.set_error();
                 span_guard.set_tag("rpc.error_category", format!("{:?}", category));
-                let error_msg: String = constellation_fabric::Codec::Bincode
+                let error_msg: String = channel
+                    .codec()
                     .decode(&payload)
                     .unwrap_or_else(|_| format!("RPC error (category: {:?})", category));
                 let error = crate::Error::Rpc(error_msg);
@@ -669,16 +606,17 @@ where
             crate::Error::Custom(format!("Invalid address '{}': {}", address, e))
         })?;
 
-    // Connect directly
-    let mut transport = constellation_fabric::transport::TcpTransport::connect(addr)
+    // Connect with default codec
+    let mut channel = Channel::tcp(addr, DEFAULT_CODEC)
         .await
         .map_err(|e| {
             span_guard.set_error();
             crate::Error::from(e)
         })?;
 
-    // Build and send frame
-    let payload = constellation_fabric::Codec::Bincode
+    // Encode request payload
+    let payload = channel
+        .codec()
         .encode(request)
         .map_err(|e| {
             span_guard.set_error();
@@ -697,28 +635,22 @@ where
         trace_id,
         parent_span_id,
     };
-    let frame = pack_frame(&header, &payload).map_err(|e| {
-        span_guard.set_error();
-        e
-    })?;
 
-    use constellation_fabric::transport::Transport;
-    transport.send(&frame).await.map_err(|e| {
+    channel.send_framed(&header, &payload).await.map_err(|e| {
         span_guard.set_error();
         crate::Error::from(e)
     })?;
 
     // Receive and parse response
-    let response_frame = transport.receive().await.map_err(|e| {
-        span_guard.set_error();
-        crate::Error::from(e)
-    })?;
-    let (_header, response_payload) = parse_frame(&response_frame).map_err(|e| {
-        span_guard.set_error();
-        e
-    })?;
-    let response: RpcResponse = constellation_fabric::Codec::Bincode
-        .decode(response_payload)
+    let (_response_header, response_payload): (RpcHeader, Vec<u8>) =
+        channel.receive_framed().await.map_err(|e| {
+            span_guard.set_error();
+            crate::Error::from(e)
+        })?;
+
+    let response: RpcResponse = channel
+        .codec()
+        .decode(&response_payload)
         .map_err(|e| {
             span_guard.set_error();
             crate::Error::Serialization(e.to_string())
@@ -726,16 +658,15 @@ where
 
     // Handle result
     match response.result {
-        ResponseResult::Success(payload) => constellation_fabric::Codec::Bincode
-            .decode(&payload)
-            .map_err(|e| {
-                span_guard.set_error();
-                crate::Error::Serialization(e.to_string())
-            }),
+        ResponseResult::Success(payload) => channel.codec().decode(&payload).map_err(|e| {
+            span_guard.set_error();
+            crate::Error::Serialization(e.to_string())
+        }),
         ResponseResult::Error { category, payload } => {
             span_guard.set_error();
             span_guard.set_tag("rpc.error_category", format!("{:?}", category));
-            let error_msg: String = constellation_fabric::Codec::Bincode
+            let error_msg: String = channel
+                .codec()
                 .decode(&payload)
                 .unwrap_or_else(|_| format!("RPC error (category: {:?})", category));
             Err(crate::Error::Rpc(error_msg))
