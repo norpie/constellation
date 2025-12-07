@@ -96,30 +96,24 @@ impl From<io::Error> for WalError {
 pub type WalResult<T> = Result<T, WalError>;
 
 /// Configuration for WAL
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema, smart_default::SmartDefault)]
+#[serde(default)]
 pub struct WalConfig {
     /// Directory for WAL files
+    #[default(PathBuf::from("./wal"))]
     pub dir: PathBuf,
     /// Maximum size per WAL file before rotation (bytes)
+    #[default = 67108864] // 64MB
     pub max_file_size: u64,
     /// Maximum number of WAL files to keep
+    #[default = 8]
     pub max_files: usize,
     /// Buffer size for writes
+    #[default = 65536] // 64KB (DEFAULT_BUFFER_SIZE)
     pub buffer_size: usize,
     /// Sync after each write (slower but safer)
+    #[default = false]
     pub sync_on_write: bool,
-}
-
-impl Default for WalConfig {
-    fn default() -> Self {
-        Self {
-            dir: PathBuf::from("./wal"),
-            max_file_size: 64 * 1024 * 1024, // 64MB
-            max_files: 8,
-            buffer_size: DEFAULT_BUFFER_SIZE,
-            sync_on_write: false,
-        }
-    }
 }
 
 impl WalConfig {

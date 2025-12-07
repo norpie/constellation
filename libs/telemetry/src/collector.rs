@@ -49,13 +49,16 @@ pub trait Collector: Send + Sync {
 }
 
 /// Configuration for the buffer collector.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema, smart_default::SmartDefault)]
+#[serde(default)]
 pub struct CollectorConfig {
     /// Maximum number of entries to buffer before overflow.
+    #[default = 10000]
     pub max_entries: usize,
 
     /// Log levels that should trigger immediate push (not just buffering).
     /// Useful for ensuring errors are sent quickly.
+    #[default(_code = "HashSet::from([Level::Error])")]
     pub immediate_levels: HashSet<Level>,
 
     /// Optional WAL directory for overflow storage.
@@ -63,18 +66,8 @@ pub struct CollectorConfig {
     pub wal_dir: Option<PathBuf>,
 
     /// WAL configuration (only used if wal_dir is set).
+    #[default(WalConfig::default())]
     pub wal_config: WalConfig,
-}
-
-impl Default for CollectorConfig {
-    fn default() -> Self {
-        Self {
-            max_entries: 10_000,
-            immediate_levels: HashSet::from([Level::Error]),
-            wal_dir: None,
-            wal_config: WalConfig::default(),
-        }
-    }
 }
 
 impl CollectorConfig {

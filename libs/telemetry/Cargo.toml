@@ -11,6 +11,8 @@ serde_json.workspace = true
 bincode.workspace = true
 rand.workspace = true
 ulid = { version = "1", features = ["serde"] }
+schemars.workspace = true
+smart-default.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

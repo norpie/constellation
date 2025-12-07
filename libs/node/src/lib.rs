@@ -7,6 +7,7 @@ pub mod raft;
 pub mod router;
 pub mod rpc;
 pub mod scheduler;
+pub mod telemetry;
 
 mod node;
 
@@ -16,7 +17,7 @@ pub use constellation_node_derive::handler;
 // Re-export commonly used types
 pub use config::{
     get_json_path, set_json_path, Config, PathError, RaftConfig, RaftCrateConfig, RpcConfig,
-    SchedulerConfig,
+    SchedulerConfig, TelemetryConfig,
 };
 pub use error::{Error, Result};
 pub use binding::{AdvertisedEndpoint, Binding};

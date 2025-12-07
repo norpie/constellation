@@ -27,6 +27,24 @@ pub struct Config {
     pub rpc: RpcConfig,
     /// Scheduler configuration
     pub scheduler: SchedulerConfig,
+    /// Telemetry collection configuration
+    pub telemetry: TelemetryConfig,
+}
+
+/// Telemetry collection configuration
+///
+/// Controls how telemetry entries (logs, metrics, spans) are buffered
+/// before being scraped by the telemetry service.
+#[derive(Debug, Clone, Serialize, Deserialize, SmartDefault, JsonSchema)]
+#[serde(default)]
+pub struct TelemetryConfig {
+    /// Whether telemetry collection is enabled
+    #[default = true]
+    pub enabled: bool,
+
+    /// Collector configuration (buffer size, WAL, immediate push levels)
+    #[default(constellation_telemetry::CollectorConfig::default())]
+    pub collector: constellation_telemetry::CollectorConfig,
 }
 
 /// Re-export raft crate's config for convenience

@@ -450,6 +450,7 @@ impl NodeBuilder {
         // Create Config first (other components need values from it)
         let config_values = crate::config::Config::default();
         let scheduler_buffer_size = config_values.scheduler.channel_buffer_size;
+        let telemetry_config = config_values.telemetry.clone();
 
         // Create Raft node with peer IDs and config
         let raft = constellation_raft::RaftNode::builder()
@@ -500,6 +501,16 @@ impl NodeBuilder {
             TypeId::of::<Data<RwLock<crate::config::Config>>>(),
             Box::new(config),
         );
+
+        // Create and register BufferCollector if telemetry is enabled
+        if telemetry_config.enabled {
+            let collector =
+                constellation_telemetry::BufferCollector::new(telemetry_config.collector);
+            data.insert(
+                TypeId::of::<Data<constellation_telemetry::BufferCollector>>(),
+                Box::new(Data::new(collector)),
+            );
+        }
 
         // Create shutdown channel
         let (shutdown_tx, _shutdown_rx) = watch::channel(false);
