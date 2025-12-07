@@ -207,7 +207,7 @@ impl Datapad {
                 _ => continue,
             };
 
-            let entry: TelemetryEntry = serde_json::from_slice(&value)
+            let entry: TelemetryEntry = bincode::deserialize(&value)
                 .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
 
             if let TelemetryEntry::Metric(metric) = entry {
@@ -244,15 +244,15 @@ impl Datapad {
                 samples,
             ) {
                 let key = rollup_key(bucket_start, &service, &name);
-                let value = serde_json::to_vec(&rollup)
+                let value = bincode::serialize(&rollup)
                     .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
 
                 // Merge with existing rollup if present
                 if let Some(existing) = rollup_tree.get(&key)? {
-                    let mut existing_rollup: RollupEntry = serde_json::from_slice(&existing)
+                    let mut existing_rollup: RollupEntry = bincode::deserialize(&existing)
                         .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
                     existing_rollup.merge(&rollup);
-                    let merged_value = serde_json::to_vec(&existing_rollup)
+                    let merged_value = bincode::serialize(&existing_rollup)
                         .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
                     rollup_tree.insert(&key, merged_value)?;
                 } else {
@@ -295,7 +295,7 @@ impl Datapad {
                 continue;
             }
 
-            let rollup: RollupEntry = serde_json::from_slice(&value)
+            let rollup: RollupEntry = bincode::deserialize(&value)
                 .map_err(|e| crate::error::Error::Serialization(e.to_string()))?;
 
             // Filter by name

@@ -223,14 +223,14 @@ impl Datapad {
     }
 }
 
-/// Serialize a telemetry entry to bytes.
+/// Serialize a telemetry entry to bytes using bincode.
 fn serialize_entry(entry: &TelemetryEntry) -> Result<Vec<u8>> {
-    serde_json::to_vec(entry).map_err(|e| Error::Serialization(e.to_string()))
+    bincode::serialize(entry).map_err(|e| Error::Serialization(e.to_string()))
 }
 
-/// Deserialize a telemetry entry from bytes.
+/// Deserialize a telemetry entry from bytes using bincode.
 fn deserialize_entry(bytes: &[u8]) -> Result<TelemetryEntry> {
-    serde_json::from_slice(bytes).map_err(|e| Error::Serialization(e.to_string()))
+    bincode::deserialize(bytes).map_err(|e| Error::Serialization(e.to_string()))
 }
 
 /// Separator byte between index value and primary key in composite index keys.
