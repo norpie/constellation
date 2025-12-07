@@ -17,6 +17,7 @@
 // Channel provides outer framing; this is inner framing for efficiency.
 
 use crate::config::Config;
+use crate::telemetry::{Span, TelemetryContext};
 use crate::Data;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -469,25 +470,42 @@ where
         peer_id: Option<&str>,
         payload: &[u8],
     ) -> Result<Resp, AttemptError> {
+        // Create span for outgoing RPC call
+        let span_name = format!("rpc.client/{}", route);
+        let mut span_guard = Span::enter(&span_name);
+        span_guard.set_tag("rpc.route", route);
+        if let Some(peer) = peer_id {
+            span_guard.set_tag("rpc.peer", peer);
+        }
+
         // 1. Resolve target using Router
         let target = match peer_id {
             Some(peer_id) => client
                 .router
                 .resolve_peer(peer_id)
                 .await
-                .map_err(|e| AttemptError::Fatal(e.into()))?,
+                .map_err(|e| {
+                    span_guard.set_error();
+                    AttemptError::Fatal(e.into())
+                })?,
             None => client
                 .router
                 .resolve_route(route)
                 .await
-                .map_err(|e| AttemptError::Fatal(e.into()))?,
+                .map_err(|e| {
+                    span_guard.set_error();
+                    AttemptError::Fatal(e.into())
+                })?,
         };
+
+        span_guard.set_tag("rpc.target", &target.address);
 
         // 2. Connect to target (connection errors are retryable)
         let addr: std::net::SocketAddr = target
             .address
             .parse()
             .map_err(|e| {
+                span_guard.set_error();
                 AttemptError::Fatal(crate::Error::Custom(format!(
                     "Invalid address '{}': {}",
                     target.address, e
@@ -496,48 +514,76 @@ where
 
         let mut transport = constellation_fabric::transport::TcpTransport::connect(addr)
             .await
-            .map_err(|e| AttemptError::Retryable(e.into()))?;
+            .map_err(|e| {
+                span_guard.set_error();
+                AttemptError::Retryable(e.into())
+            })?;
 
         // 3. Build and send RPC frame
-        // TODO(4.5): Read trace_id and parent_span_id from TelemetryContext
+        // Read trace context from TelemetryContext (if available)
+        let (trace_id, parent_span_id) = TelemetryContext::with(|ctx| {
+            (Some(ctx.trace_id.clone()), Some(ctx.span_id.clone()))
+        })
+        .unwrap_or((None, None));
+
         let header = RpcHeader {
             request_id: Uuid::new_v4(),
             route: route.to_string(),
-            trace_id: None,
-            parent_span_id: None,
+            trace_id,
+            parent_span_id,
         };
-        let frame = pack_frame(&header, payload).map_err(|e| AttemptError::Fatal(e))?;
+        let frame = pack_frame(&header, payload).map_err(|e| {
+            span_guard.set_error();
+            AttemptError::Fatal(e)
+        })?;
 
         use constellation_fabric::transport::Transport;
         transport
             .send(&frame)
             .await
-            .map_err(|e| AttemptError::Retryable(e.into()))?;
+            .map_err(|e| {
+                span_guard.set_error();
+                AttemptError::Retryable(e.into())
+            })?;
 
         // 4. Receive response (network errors are retryable)
         let response_frame = transport
             .receive()
             .await
-            .map_err(|e| AttemptError::Retryable(e.into()))?;
+            .map_err(|e| {
+                span_guard.set_error();
+                AttemptError::Retryable(e.into())
+            })?;
 
         // 5. Parse response frame
         let (_response_header, response_payload) =
-            parse_frame(&response_frame).map_err(|e| AttemptError::Fatal(e))?;
+            parse_frame(&response_frame).map_err(|e| {
+                span_guard.set_error();
+                AttemptError::Fatal(e)
+            })?;
 
         // 6. Deserialize RpcResponse from payload
         let response: RpcResponse = constellation_fabric::Codec::Bincode
             .decode(response_payload)
-            .map_err(|e| AttemptError::Fatal(crate::Error::Serialization(e.to_string())))?;
+            .map_err(|e| {
+                span_guard.set_error();
+                AttemptError::Fatal(crate::Error::Serialization(e.to_string()))
+            })?;
 
         // 7. Handle response result
         match response.result {
             ResponseResult::Success(payload) => {
                 let result: Resp = constellation_fabric::Codec::Bincode
                     .decode(&payload)
-                    .map_err(|e| AttemptError::Fatal(crate::Error::Serialization(e.to_string())))?;
+                    .map_err(|e| {
+                        span_guard.set_error();
+                        AttemptError::Fatal(crate::Error::Serialization(e.to_string()))
+                    })?;
                 Ok(result)
             }
             ResponseResult::Error { category, payload } => {
+                span_guard.set_error();
+                span_guard.set_tag("rpc.error_category", format!("{:?}", category));
                 let error_msg: String = constellation_fabric::Codec::Bincode
                     .decode(&payload)
                     .unwrap_or_else(|_| format!("RPC error (category: {:?})", category));
@@ -567,42 +613,86 @@ where
     Req: serde::Serialize,
     Resp: DeserializeOwned,
 {
+    // Create span for outgoing RPC call
+    let span_name = format!("rpc.direct/{}", route);
+    let mut span_guard = Span::enter(&span_name);
+    span_guard.set_tag("rpc.route", route);
+    span_guard.set_tag("rpc.target", address);
+
     // Parse address
     let addr: std::net::SocketAddr = address
         .parse()
-        .map_err(|e| crate::Error::Custom(format!("Invalid address '{}': {}", address, e)))?;
+        .map_err(|e| {
+            span_guard.set_error();
+            crate::Error::Custom(format!("Invalid address '{}': {}", address, e))
+        })?;
 
     // Connect directly
-    let mut transport = constellation_fabric::transport::TcpTransport::connect(addr).await?;
+    let mut transport = constellation_fabric::transport::TcpTransport::connect(addr)
+        .await
+        .map_err(|e| {
+            span_guard.set_error();
+            crate::Error::from(e)
+        })?;
 
     // Build and send frame
     let payload = constellation_fabric::Codec::Bincode
         .encode(request)
-        .map_err(|e| crate::Error::Serialization(e.to_string()))?;
+        .map_err(|e| {
+            span_guard.set_error();
+            crate::Error::Serialization(e.to_string())
+        })?;
+
+    // Read trace context from TelemetryContext (if available)
+    let (trace_id, parent_span_id) = TelemetryContext::with(|ctx| {
+        (Some(ctx.trace_id.clone()), Some(ctx.span_id.clone()))
+    })
+    .unwrap_or((None, None));
+
     let header = RpcHeader {
         request_id: Uuid::new_v4(),
         route: route.to_string(),
-        trace_id: None,
-        parent_span_id: None,
+        trace_id,
+        parent_span_id,
     };
-    let frame = pack_frame(&header, &payload)?;
+    let frame = pack_frame(&header, &payload).map_err(|e| {
+        span_guard.set_error();
+        e
+    })?;
 
     use constellation_fabric::transport::Transport;
-    transport.send(&frame).await?;
+    transport.send(&frame).await.map_err(|e| {
+        span_guard.set_error();
+        crate::Error::from(e)
+    })?;
 
     // Receive and parse response
-    let response_frame = transport.receive().await?;
-    let (_header, response_payload) = parse_frame(&response_frame)?;
+    let response_frame = transport.receive().await.map_err(|e| {
+        span_guard.set_error();
+        crate::Error::from(e)
+    })?;
+    let (_header, response_payload) = parse_frame(&response_frame).map_err(|e| {
+        span_guard.set_error();
+        e
+    })?;
     let response: RpcResponse = constellation_fabric::Codec::Bincode
         .decode(response_payload)
-        .map_err(|e| crate::Error::Serialization(e.to_string()))?;
+        .map_err(|e| {
+            span_guard.set_error();
+            crate::Error::Serialization(e.to_string())
+        })?;
 
     // Handle result
     match response.result {
         ResponseResult::Success(payload) => constellation_fabric::Codec::Bincode
             .decode(&payload)
-            .map_err(|e| crate::Error::Serialization(e.to_string())),
+            .map_err(|e| {
+                span_guard.set_error();
+                crate::Error::Serialization(e.to_string())
+            }),
         ResponseResult::Error { category, payload } => {
+            span_guard.set_error();
+            span_guard.set_tag("rpc.error_category", format!("{:?}", category));
             let error_msg: String = constellation_fabric::Codec::Bincode
                 .decode(&payload)
                 .unwrap_or_else(|_| format!("RPC error (category: {:?})", category));

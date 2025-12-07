@@ -1,6 +1,7 @@
 //! Tests for RPC frame packing/parsing
 
 use constellation_node::rpc::{pack_frame, parse_frame, RpcHeader};
+use constellation_telemetry::{SpanId, TraceId};
 use uuid::Uuid;
 
 #[test]
@@ -100,4 +101,37 @@ fn test_frame_with_large_payload() {
     assert_eq!(parsed_header.request_id, header.request_id);
     assert_eq!(parsed_header.route, header.route);
     assert_eq!(parsed_payload, &payload[..]);
+}
+
+#[test]
+fn test_frame_with_trace_context() {
+    let trace_id = TraceId::new();
+    let span_id = SpanId::new();
+
+    let header = RpcHeader {
+        request_id: Uuid::new_v4(),
+        route: "Traced.method.v1".to_string(),
+        trace_id: Some(trace_id.clone()),
+        parent_span_id: Some(span_id.clone()),
+    };
+    let payload = b"traced payload";
+
+    let frame = pack_frame(&header, payload).unwrap();
+    let (parsed_header, parsed_payload) = parse_frame(&frame).unwrap();
+
+    assert_eq!(parsed_header.request_id, header.request_id);
+    assert_eq!(parsed_header.route, header.route);
+    assert_eq!(parsed_payload, payload);
+
+    // Verify trace context is preserved
+    assert!(parsed_header.trace_id.is_some());
+    assert!(parsed_header.parent_span_id.is_some());
+    assert_eq!(
+        parsed_header.trace_id.as_ref().map(|t| t.as_str()),
+        Some(trace_id.as_str())
+    );
+    assert_eq!(
+        parsed_header.parent_span_id.as_ref().map(|s| s.as_str()),
+        Some(span_id.as_str())
+    );
 }
