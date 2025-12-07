@@ -18,6 +18,11 @@ pub struct Extractor {
     pub extractor_type: ExtractorType,
 }
 
+/// Check if a type looks like an extractor (Data<T>)
+pub fn is_extractor_type(ty: &Type) -> bool {
+    extract_data_type(ty).is_some()
+}
+
 /// Check if a type is a recognized extractor and extract information
 pub fn identify_extractor(name: Ident, ty: &Type) -> syn::Result<Extractor> {
     // Try to parse as Data<T>

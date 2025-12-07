@@ -146,3 +146,81 @@ async fn test_handler_with_rpc_client() {
     let response: CallOtherServiceResponse = codec.decode(&response_bytes).unwrap();
     assert_eq!(response.result, "Would call other service for user 123");
 }
+
+// ============================================================================
+// Empty request handler tests
+// ============================================================================
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+struct StatusResponse {
+    status: String,
+}
+
+// Handler with no request parameter at all
+#[handler]
+async fn health_check() -> Result<StatusResponse, MyError> {
+    Ok(StatusResponse {
+        status: "healthy".to_string(),
+    })
+}
+
+#[tokio::test]
+async fn test_handler_no_request_parameter() {
+    use constellation_fabric::Codec;
+
+    let node = Node::builder()
+        .service_name("TestService")
+        .auto_discover(false)
+        .build()
+        .unwrap();
+
+    let codec = Codec::Bincode;
+
+    // Empty payload for no-request handler
+    let request = RpcRequest {
+        request_id: Uuid::new_v4(),
+        route: "TestService.health_check.v1".to_string(),
+        payload: vec![],
+    };
+
+    let handler = &HEALTH_CHECK_HANDLER;
+    let response_bytes = handler.call(node.node(), &request).await.unwrap();
+
+    let response: StatusResponse = codec.decode(&response_bytes).unwrap();
+    assert_eq!(response.status, "healthy");
+}
+
+// Handler with only extractors (no request)
+#[handler]
+async fn get_prefix(prefix: Data<String>) -> Result<StatusResponse, MyError> {
+    Ok(StatusResponse {
+        status: prefix.to_string(),
+    })
+}
+
+#[tokio::test]
+async fn test_handler_extractors_only() {
+    use constellation_fabric::Codec;
+
+    let node = Node::builder()
+        .service_name("TestService")
+        .auto_discover(false)
+        .data("extracted-value".to_string())
+        .build()
+        .unwrap();
+
+    let codec = Codec::Bincode;
+
+    // Empty payload - handler only uses extractors
+    let request = RpcRequest {
+        request_id: Uuid::new_v4(),
+        route: "TestService.get_prefix.v1".to_string(),
+        payload: vec![],
+    };
+
+    let handler = &GET_PREFIX_HANDLER;
+    let response_bytes = handler.call(node.node(), &request).await.unwrap();
+
+    let response: StatusResponse = codec.decode(&response_bytes).unwrap();
+    assert_eq!(response.status, "extracted-value");
+}

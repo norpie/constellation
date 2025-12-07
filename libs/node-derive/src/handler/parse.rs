@@ -1,7 +1,7 @@
 // Parse function signature into HandlerInfo
 
 use crate::handler::attributes::HandlerAttributes;
-use crate::handler::extractors::{identify_extractor, Extractor};
+use crate::handler::extractors::{identify_extractor, is_extractor_type, Extractor};
 use proc_macro2::Span;
 use syn::{Block, FnArg, Ident, ItemFn, Pat, ReturnType, Type};
 
@@ -10,8 +10,8 @@ pub struct HandlerInfo {
     pub fn_name: Ident,
     pub struct_name: Ident,
     pub const_name: Ident,
-    pub request_param: Ident,
-    pub request_type: Type,
+    /// Request parameter name and type (None if handler takes no request)
+    pub request: Option<(Ident, Type)>,
     pub response_type: Type,
     pub error_type: Type,
     pub extractors: Vec<Extractor>,
@@ -43,17 +43,27 @@ pub fn parse_handler(input: ItemFn, attrs: HandlerAttributes) -> syn::Result<Han
     );
 
     // Parse parameters
-    let mut params = input.sig.inputs.iter();
+    let mut params = input.sig.inputs.iter().peekable();
+    let mut extractors = Vec::new();
 
-    // First parameter is always the request
-    let first_param = params
-        .next()
-        .ok_or_else(|| syn::Error::new_spanned(&input.sig, "Handler must have at least one parameter (the request)"))?;
+    // Check if first parameter exists and whether it's a request or extractor
+    let request = if let Some(first_param) = params.peek() {
+        let (name, ty) = extract_param_info(first_param)?;
 
-    let (request_param, request_type) = extract_param_info(first_param)?;
+        if is_extractor_type(&ty) {
+            // First param is an extractor, no request parameter
+            None
+        } else {
+            // First param is the request, consume it
+            params.next();
+            Some((name, ty))
+        }
+    } else {
+        // No parameters at all
+        None
+    };
 
     // Remaining parameters are extractors
-    let mut extractors = Vec::new();
     for param in params {
         let (name, ty) = extract_param_info(param)?;
         let extractor = identify_extractor(name, &ty)?;
@@ -80,8 +90,7 @@ pub fn parse_handler(input: ItemFn, attrs: HandlerAttributes) -> syn::Result<Han
         fn_name,
         struct_name,
         const_name,
-        request_param,
-        request_type,
+        request,
         response_type,
         error_type,
         extractors,

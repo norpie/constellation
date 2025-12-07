@@ -72,8 +72,10 @@ fn generate_handler_impl(info: &HandlerInfo) -> TokenStream {
 }
 
 fn generate_decode(info: &HandlerInfo) -> TokenStream {
-    let request_param = &info.request_param;
-    let request_type = &info.request_type;
+    let Some((request_param, request_type)) = &info.request else {
+        // No request parameter - nothing to decode
+        return TokenStream::new();
+    };
     let crate_path = get_crate_path();
 
     quote! {
@@ -113,8 +115,6 @@ fn generate_extractors(info: &HandlerInfo) -> TokenStream {
 
 fn generate_call(info: &HandlerInfo) -> TokenStream {
     let fn_name = &info.fn_name;
-    let request_param = &info.request_param;
-    let request_type = &info.request_type;
     let extractor_names: Vec<_> = info.extractors.iter().map(|ext| &ext.name).collect();
     let extractor_types: Vec<_> = info.extractors.iter().map(|ext| &ext.ty).collect();
     let body = &info.body;
@@ -122,15 +122,27 @@ fn generate_call(info: &HandlerInfo) -> TokenStream {
     let error_type = &info.error_type;
     let crate_path = get_crate_path();
 
+    // Generate function signature and call based on whether we have a request param
+    let (fn_params, fn_call) = if let Some((request_param, request_type)) = &info.request {
+        (
+            quote! { #request_param: #request_type, #(#extractor_names: #extractor_types),* },
+            quote! { #fn_name(#request_param, #(#extractor_names),*).await },
+        )
+    } else {
+        (
+            quote! { #(#extractor_names: #extractor_types),* },
+            quote! { #fn_name(#(#extractor_names),*).await },
+        )
+    };
+
     quote! {
         async fn #fn_name(
-            #request_param: #request_type,
-            #(#extractor_names: #extractor_types),*
+            #fn_params
         ) -> ::core::result::Result<#response_type, #error_type> {
             #body
         }
 
-        let response = match #fn_name(#request_param, #(#extractor_names),*).await {
+        let response = match #fn_call {
             Ok(resp) => resp,
             Err(e) => {
                 // Get error category
