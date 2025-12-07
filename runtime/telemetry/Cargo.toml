@@ -10,6 +10,7 @@ constellation-node = { path = "../../libs/node" }
 constellation-fabric = { path = "../../libs/fabric" }
 constellation-telemetry = { path = "../../libs/telemetry" }
 constellation-datapad = { path = "../../libs/datapad" }
+constellation-raft = { path = "../../libs/raft" }
 
 # Async runtime
 tokio.workspace = true
