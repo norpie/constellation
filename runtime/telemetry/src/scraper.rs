@@ -80,11 +80,7 @@ pub async fn scrape_remote_nodes(ctx: TaskContext) {
         }
 
         // Call _telemetry.scrape on the node
-        let call_result = rpc.call_peer::<(), ScrapeResponse>(
-            &node_id,
-            "_telemetry.scrape",
-            &(),
-        );
+        let call_result = rpc.invoke_peer::<ScrapeResponse>(&node_id, "_telemetry.scrape");
 
         let builder = match call_result {
             Ok(b) => b.no_retry(),

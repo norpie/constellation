@@ -287,6 +287,48 @@ impl RpcClient {
         ))
     }
 
+    /// Make an RPC call to a route that takes no request payload
+    ///
+    /// Convenience method for calling handlers that don't require a request.
+    ///
+    /// # Example
+    /// ```text
+    /// let status: HealthStatus = rpc.invoke("_health.status")?.await?;
+    /// ```
+    pub fn invoke<Resp>(&self, route: &str) -> crate::Result<RpcCallBuilder<Resp>>
+    where
+        Resp: DeserializeOwned,
+    {
+        Ok(RpcCallBuilder::new(
+            self.clone(),
+            route.to_string(),
+            None,
+            vec![], // Empty payload
+        ))
+    }
+
+    /// Make an RPC call to a specific peer with no request payload
+    ///
+    /// Convenience method for calling handlers that don't require a request.
+    ///
+    /// # Example
+    /// ```text
+    /// let response: ScrapeResponse = rpc
+    ///     .invoke_peer("node-2", "_telemetry.scrape")?
+    ///     .await?;
+    /// ```
+    pub fn invoke_peer<Resp>(&self, peer_id: &str, route: &str) -> crate::Result<RpcCallBuilder<Resp>>
+    where
+        Resp: DeserializeOwned,
+    {
+        Ok(RpcCallBuilder::new(
+            self.clone(),
+            route.to_string(),
+            Some(peer_id.to_string()),
+            vec![], // Empty payload
+        ))
+    }
+
     /// Get a reference to the underlying router
     pub fn router(&self) -> &crate::router::Router {
         &self.router
