@@ -10,10 +10,7 @@ use crate::types::{Level, LogEntry, MetricEntry, SpanEntry, TelemetryEntry};
 use crate::wal::{WalConfig, WalManager};
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
-
-/// Global collector instance.
-static GLOBAL_COLLECTOR: OnceLock<Arc<dyn Collector>> = OnceLock::new();
+use std::sync::Mutex;
 
 /// Trait for telemetry collectors.
 ///
@@ -305,64 +302,11 @@ impl Collector for BufferCollector {
     }
 }
 
-// === Global Collector API ===
-
-/// Set the global collector.
-///
-/// This should be called once at application startup.
-/// Returns `Err` if a collector was already set.
-pub fn set_global_collector(collector: Arc<dyn Collector>) -> Result<(), Arc<dyn Collector>> {
-    GLOBAL_COLLECTOR.set(collector)
-}
-
-/// Get the global collector, if set.
-pub fn global_collector() -> Option<&'static Arc<dyn Collector>> {
-    GLOBAL_COLLECTOR.get()
-}
-
-/// Collect a telemetry entry using the global collector.
-///
-/// No-op if no global collector is set.
-pub fn collect(entry: TelemetryEntry) {
-    if let Some(collector) = global_collector() {
-        collector.collect(entry);
-    }
-}
-
-/// Collect a log entry using the global collector.
-pub fn collect_log(entry: LogEntry) {
-    if let Some(collector) = global_collector() {
-        collector.collect_log(entry);
-    }
-}
-
-/// Collect a metric entry using the global collector.
-pub fn collect_metric(entry: MetricEntry) {
-    if let Some(collector) = global_collector() {
-        collector.collect_metric(entry);
-    }
-}
-
-/// Collect a span entry using the global collector.
-pub fn collect_span(entry: SpanEntry) {
-    if let Some(collector) = global_collector() {
-        collector.collect_span(entry);
-    }
-}
-
-/// Drain all entries from the global collector.
-///
-/// Returns empty vec if no collector is set.
-pub fn drain() -> Vec<TelemetryEntry> {
-    global_collector()
-        .map(|c| c.drain())
-        .unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::CommonFields;
+    use std::sync::Arc;
 
     fn make_log(service: &str, level: Level, message: &str) -> LogEntry {
         let common = CommonFields::new(service, "node-1");
