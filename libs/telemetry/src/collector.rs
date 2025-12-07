@@ -2,9 +2,14 @@
 //!
 //! The collector receives telemetry entries (logs, metrics, spans) and buffers
 //! them until they are scraped or pushed to the telemetry service.
+//!
+//! When configured with a WAL directory, the collector will spill entries to disk
+//! when the in-memory buffer is full, instead of dropping them.
 
 use crate::types::{Level, LogEntry, MetricEntry, SpanEntry, TelemetryEntry};
+use crate::wal::{WalConfig, WalManager};
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Global collector instance.
@@ -49,12 +54,19 @@ pub trait Collector: Send + Sync {
 /// Configuration for the buffer collector.
 #[derive(Debug, Clone)]
 pub struct CollectorConfig {
-    /// Maximum number of entries to buffer before dropping oldest.
+    /// Maximum number of entries to buffer before overflow.
     pub max_entries: usize,
 
     /// Log levels that should trigger immediate push (not just buffering).
     /// Useful for ensuring errors are sent quickly.
     pub immediate_levels: HashSet<Level>,
+
+    /// Optional WAL directory for overflow storage.
+    /// If set, entries will be written to WAL when buffer is full instead of dropped.
+    pub wal_dir: Option<PathBuf>,
+
+    /// WAL configuration (only used if wal_dir is set).
+    pub wal_config: WalConfig,
 }
 
 impl Default for CollectorConfig {
@@ -62,6 +74,8 @@ impl Default for CollectorConfig {
         Self {
             max_entries: 10_000,
             immediate_levels: HashSet::from([Level::Error]),
+            wal_dir: None,
+            wal_config: WalConfig::default(),
         }
     }
 }
@@ -80,16 +94,37 @@ impl CollectorConfig {
         self.immediate_levels = levels.into_iter().collect();
         self
     }
+
+    /// Enable WAL overflow to the specified directory.
+    pub fn with_wal(mut self, dir: impl Into<PathBuf>) -> Self {
+        let dir = dir.into();
+        self.wal_config = WalConfig::new(&dir);
+        self.wal_dir = Some(dir);
+        self
+    }
+
+    /// Enable WAL overflow with custom configuration.
+    pub fn with_wal_config(mut self, config: WalConfig) -> Self {
+        self.wal_dir = Some(config.dir.clone());
+        self.wal_config = config;
+        self
+    }
 }
 
-/// In-memory ring buffer collector.
+/// In-memory ring buffer collector with optional WAL overflow.
 ///
-/// Stores entries up to `max_entries`, dropping oldest when full.
+/// Stores entries up to `max_entries`. When full:
+/// - If WAL is configured: spills overflow to disk
+/// - Otherwise: drops oldest entries
 pub struct BufferCollector {
     config: CollectorConfig,
     buffer: Mutex<RingBuffer>,
+    /// Optional WAL manager for overflow
+    wal: Option<Mutex<WalManager>>,
     /// Callback for immediate push (e.g., for error logs)
     immediate_callback: Mutex<Option<Box<dyn Fn(&TelemetryEntry) + Send + Sync>>>,
+    /// Count of entries spilled to WAL
+    wal_spill_count: Mutex<u64>,
 }
 
 struct RingBuffer {
@@ -105,11 +140,19 @@ impl RingBuffer {
         }
     }
 
+    fn is_full(&self) -> bool {
+        self.entries.len() >= self.max_size
+    }
+
     fn push(&mut self, entry: TelemetryEntry) {
         if self.entries.len() >= self.max_size {
-            // Drop oldest entry
+            // Drop oldest entry (only called when no WAL)
             self.entries.remove(0);
         }
+        self.entries.push(entry);
+    }
+
+    fn push_unchecked(&mut self, entry: TelemetryEntry) {
         self.entries.push(entry);
     }
 
@@ -126,10 +169,24 @@ impl BufferCollector {
     /// Create a new buffer collector with the given config.
     pub fn new(config: CollectorConfig) -> Self {
         let max_size = config.max_entries;
+
+        // Initialize WAL if configured
+        let wal = config.wal_dir.as_ref().and_then(|_| {
+            match WalManager::new(config.wal_config.clone()) {
+                Ok(manager) => Some(Mutex::new(manager)),
+                Err(e) => {
+                    eprintln!("Failed to initialize WAL: {}", e);
+                    None
+                }
+            }
+        });
+
         Self {
             config,
             buffer: Mutex::new(RingBuffer::new(max_size)),
+            wal,
             immediate_callback: Mutex::new(None),
+            wal_spill_count: Mutex::new(0),
         }
     }
 
@@ -154,6 +211,11 @@ impl BufferCollector {
         self.config.immediate_levels.contains(&level)
     }
 
+    /// Get the count of entries spilled to WAL.
+    pub fn wal_spill_count(&self) -> u64 {
+        *self.wal_spill_count.lock().unwrap()
+    }
+
     /// Internal collect with optional immediate callback.
     fn collect_internal(&self, entry: TelemetryEntry, check_immediate: Option<Level>) {
         // Check for immediate push
@@ -167,9 +229,26 @@ impl BufferCollector {
             }
         }
 
-        // Always buffer
+        // Try to buffer
         let mut buffer = self.buffer.lock().unwrap();
-        buffer.push(entry);
+
+        if buffer.is_full() {
+            // Buffer is full - try WAL overflow
+            if let Some(ref wal) = self.wal {
+                if let Ok(mut wal_guard) = wal.lock() {
+                    if wal_guard.append(&entry).is_ok() {
+                        // Successfully spilled to WAL
+                        let mut count = self.wal_spill_count.lock().unwrap();
+                        *count += 1;
+                        return;
+                    }
+                }
+            }
+            // WAL not available or failed - drop oldest and add new
+            buffer.push(entry);
+        } else {
+            buffer.push_unchecked(entry);
+        }
     }
 }
 
@@ -188,13 +267,41 @@ impl Collector for BufferCollector {
     }
 
     fn drain(&self) -> Vec<TelemetryEntry> {
+        let mut entries = Vec::new();
+
+        // First, flush and recover any WAL entries (oldest first)
+        if let Some(ref wal) = self.wal {
+            if let Ok(mut wal_guard) = wal.lock() {
+                // Flush to ensure all buffered data is written
+                let _ = wal_guard.sync();
+
+                match wal_guard.recover() {
+                    Ok(wal_entries) => {
+                        entries.extend(wal_entries);
+                        // Clear WAL after successful recovery
+                        let _ = wal_guard.clear();
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to recover WAL entries: {}", e);
+                    }
+                }
+            }
+        }
+
+        // Then add buffered entries (newer)
         let mut buffer = self.buffer.lock().unwrap();
-        buffer.drain()
+        entries.extend(buffer.drain());
+
+        // Reset spill count
+        *self.wal_spill_count.lock().unwrap() = 0;
+
+        entries
     }
 
     fn len(&self) -> usize {
-        let buffer = self.buffer.lock().unwrap();
-        buffer.len()
+        let buffer_len = self.buffer.lock().unwrap().len();
+        let wal_count = *self.wal_spill_count.lock().unwrap() as usize;
+        buffer_len + wal_count
     }
 }
 
@@ -415,5 +522,90 @@ mod tests {
         }
 
         assert_eq!(collector.len(), 1000);
+    }
+
+    #[test]
+    fn wal_overflow() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let config = CollectorConfig::new(3).with_wal(temp_dir.path());
+
+        let collector = BufferCollector::new(config);
+
+        // Add 5 entries to a buffer of size 3
+        collector.collect_log(make_log("a", Level::Info, "1"));
+        collector.collect_log(make_log("b", Level::Info, "2"));
+        collector.collect_log(make_log("c", Level::Info, "3"));
+        // These should spill to WAL
+        collector.collect_log(make_log("d", Level::Info, "4"));
+        collector.collect_log(make_log("e", Level::Info, "5"));
+
+        // Buffer has 3, WAL has 2
+        assert_eq!(collector.len(), 5);
+        assert_eq!(collector.wal_spill_count(), 2);
+
+        // Drain should return all 5 in order (WAL first, then buffer)
+        let entries = collector.drain();
+        assert_eq!(entries.len(), 5);
+
+        let messages: Vec<_> = entries
+            .iter()
+            .filter_map(|e| match e {
+                TelemetryEntry::Log(l) => Some(l.message.as_str()),
+                _ => None,
+            })
+            .collect();
+        // WAL entries (4, 5) first, then buffer (1, 2, 3)
+        assert_eq!(messages, vec!["4", "5", "1", "2", "3"]);
+
+        // After drain, everything should be empty
+        assert_eq!(collector.len(), 0);
+        assert_eq!(collector.wal_spill_count(), 0);
+    }
+
+    #[test]
+    fn wal_recovery_after_restart() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let wal_path = temp_dir.path().to_path_buf();
+
+        // First collector - write some entries and "crash" (drop without drain)
+        {
+            let config = CollectorConfig::new(2).with_wal(&wal_path);
+            let collector = BufferCollector::new(config);
+
+            collector.collect_log(make_log("a", Level::Info, "1"));
+            collector.collect_log(make_log("b", Level::Info, "2"));
+            // This spills to WAL
+            collector.collect_log(make_log("c", Level::Info, "3"));
+
+            assert_eq!(collector.wal_spill_count(), 1);
+            // Don't drain - simulate crash
+        }
+
+        // Second collector - should recover WAL entries
+        {
+            let config = CollectorConfig::new(10).with_wal(&wal_path);
+            let collector = BufferCollector::new(config);
+
+            // Add a new entry
+            collector.collect_log(make_log("d", Level::Info, "4"));
+
+            // Drain should include recovered WAL entry
+            let entries = collector.drain();
+
+            let messages: Vec<_> = entries
+                .iter()
+                .filter_map(|e| match e {
+                    TelemetryEntry::Log(l) => Some(l.message.as_str()),
+                    _ => None,
+                })
+                .collect();
+
+            // Entry "3" from WAL, then "4" from buffer
+            assert_eq!(messages, vec!["3", "4"]);
+        }
     }
 }

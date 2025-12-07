@@ -52,7 +52,6 @@ impl std::fmt::Display for Level {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {
     /// Common fields (id, timestamp, service, node_id, trace_id, span_id, tags)
-    #[serde(flatten)]
     pub common: CommonFields,
 
     /// Log severity level

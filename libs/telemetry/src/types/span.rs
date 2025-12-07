@@ -37,7 +37,6 @@ impl std::fmt::Display for SpanStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpanEntry {
     /// Common fields (id, timestamp, service, node_id, trace_id, span_id, tags)
-    #[serde(flatten)]
     pub common: CommonFields,
 
     /// Operation name (e.g., "handle_login", "db_query")

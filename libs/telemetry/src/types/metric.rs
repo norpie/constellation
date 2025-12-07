@@ -34,7 +34,6 @@ impl std::fmt::Display for MetricType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricEntry {
     /// Common fields (id, timestamp, service, node_id, trace_id, span_id, tags)
-    #[serde(flatten)]
     pub common: CommonFields,
 
     /// Metric name (e.g., "requests_total", "request_duration_ms")
@@ -48,7 +47,6 @@ pub struct MetricEntry {
 
     /// Raw histogram samples (for histogram type)
     /// Stored as raw values, aggregated into rollups later
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub histogram: Option<Vec<f64>>,
 }
 

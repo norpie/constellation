@@ -36,6 +36,7 @@ pub mod macros;
 pub mod spawn;
 pub mod span;
 pub mod types;
+pub mod wal;
 
 // Re-export commonly used types at crate root
 pub use collector::{
@@ -49,6 +50,4 @@ pub use types::{
     current_timestamp_micros, CommonFields, EntryId, EntryType, Level, LogEntry, MetricEntry,
     MetricType, SpanEntry, SpanId, SpanStatus, TelemetryEntry, Timestamp, TraceId,
 };
-
-// Future modules (not yet implemented):
-// pub mod wal;
+pub use wal::{Wal, WalConfig, WalError, WalManager, WalReader, WalResult};

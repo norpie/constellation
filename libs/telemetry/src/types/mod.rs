@@ -36,7 +36,6 @@ impl EntryType {
 
 /// Unified telemetry entry enum
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
 pub enum TelemetryEntry {
     Log(LogEntry),
     Metric(MetricEntry),
@@ -165,12 +164,25 @@ mod tests {
         let log = LogEntry::new(common, Level::Info, "test message");
         let entry: TelemetryEntry = log.into();
 
-        // Serialize to JSON
+        // Serialize to JSON (externally tagged: {"Log": {...}})
         let json = serde_json::to_string(&entry).unwrap();
-        assert!(json.contains("\"type\":\"log\""));
+        assert!(json.contains("\"Log\""));
 
         // Deserialize back
         let deserialized: TelemetryEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.entry_type(), EntryType::Log);
+    }
+
+    #[test]
+    fn telemetry_entry_bincode() {
+        let common = CommonFields::new("auth", "auth-1");
+        let log = LogEntry::new(common, Level::Info, "test message");
+        let entry: TelemetryEntry = log.into();
+
+        // Bincode round-trip
+        let bytes = bincode::serialize(&entry).unwrap();
+        let deserialized: TelemetryEntry = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(deserialized.entry_type(), EntryType::Log);
+        assert_eq!(deserialized.service(), "auth");
     }
 }
