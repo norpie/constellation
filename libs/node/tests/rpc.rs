@@ -8,6 +8,8 @@ fn test_pack_parse_frame_roundtrip() {
     let header = RpcHeader {
         request_id: Uuid::new_v4(),
         route: "TestService.method.v1".to_string(),
+        trace_id: None,
+        parent_span_id: None,
     };
     let payload = b"test payload data";
 
@@ -46,6 +48,8 @@ fn test_parse_frame_incomplete() {
     let header = RpcHeader {
         request_id: Uuid::new_v4(),
         route: "Test.method.v1".to_string(),
+        trace_id: None,
+        parent_span_id: None,
     };
     let payload = b"payload";
 
@@ -67,6 +71,8 @@ fn test_frame_with_empty_payload() {
     let header = RpcHeader {
         request_id: Uuid::new_v4(),
         route: "Empty.test.v1".to_string(),
+        trace_id: None,
+        parent_span_id: None,
     };
     let payload = b"";
 
@@ -83,6 +89,8 @@ fn test_frame_with_large_payload() {
     let header = RpcHeader {
         request_id: Uuid::new_v4(),
         route: "Large.payload.v1".to_string(),
+        trace_id: None,
+        parent_span_id: None,
     };
     let payload = vec![0xAB; 10000]; // 10KB payload
 

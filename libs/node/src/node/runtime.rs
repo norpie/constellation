@@ -257,10 +257,12 @@ async fn handle_connection(mut transport: Box<dyn constellation_fabric::transpor
             .encode(&response)
             .map_err(|e| Error::Serialization(e.to_string()))?;
 
-        // Build response frame
+        // Build response frame (propagate trace context from request)
         let response_header = crate::rpc::RpcHeader {
             request_id: header.request_id,
             route: header.route,
+            trace_id: header.trace_id,
+            parent_span_id: header.parent_span_id,
         };
         let response_frame = crate::rpc::pack_frame(&response_header, &response_payload)?;
 

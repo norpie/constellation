@@ -86,6 +86,8 @@ async fn test_basic_rpc_flow() {
     let header = constellation_node::rpc::RpcHeader {
         request_id: Uuid::new_v4(),
         route: "MathService.add.v1".to_string(),
+        trace_id: None,
+        parent_span_id: None,
     };
     let frame = constellation_node::rpc::pack_frame(&header, &payload).unwrap();
 
@@ -157,6 +159,8 @@ async fn test_error_response() {
     let header = constellation_node::rpc::RpcHeader {
         request_id: Uuid::new_v4(),
         route: "MathService.failing.v1".to_string(),
+        trace_id: None,
+        parent_span_id: None,
     };
     let frame = constellation_node::rpc::pack_frame(&header, &payload).unwrap();
 

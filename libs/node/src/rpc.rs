@@ -139,6 +139,10 @@ pub struct HandlerError {
 pub struct RpcHeader {
     pub request_id: Uuid,
     pub route: String,
+    /// Trace ID for distributed tracing (propagated across services)
+    pub trace_id: Option<constellation_telemetry::TraceId>,
+    /// Parent span ID for linking child spans to parents
+    pub parent_span_id: Option<constellation_telemetry::SpanId>,
 }
 
 /// Pack an RPC frame for transmission
@@ -495,9 +499,12 @@ where
             .map_err(|e| AttemptError::Retryable(e.into()))?;
 
         // 3. Build and send RPC frame
+        // TODO(4.5): Read trace_id and parent_span_id from TelemetryContext
         let header = RpcHeader {
             request_id: Uuid::new_v4(),
             route: route.to_string(),
+            trace_id: None,
+            parent_span_id: None,
         };
         let frame = pack_frame(&header, payload).map_err(|e| AttemptError::Fatal(e))?;
 
@@ -575,6 +582,8 @@ where
     let header = RpcHeader {
         request_id: Uuid::new_v4(),
         route: route.to_string(),
+        trace_id: None,
+        parent_span_id: None,
     };
     let frame = pack_frame(&header, &payload)?;
 
