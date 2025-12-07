@@ -28,7 +28,7 @@ macro_rules! __log_internal {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```text
 /// error!("Connection failed");
 /// error!("Request failed: {}", err);
 /// error!("Auth error", "user_id" => user_id, "reason" => "invalid_token");
@@ -44,7 +44,7 @@ macro_rules! error {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```text
 /// warn!("Slow query detected");
 /// warn!("High memory usage: {}%", usage);
 /// warn!("Rate limit approaching", "current" => count, "limit" => max);
@@ -60,7 +60,7 @@ macro_rules! warn {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```text
 /// info!("Server started");
 /// info!("User {} logged in", user_id);
 /// info!("Request handled", "method" => "GET", "path" => path);
@@ -76,7 +76,7 @@ macro_rules! info {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```text
 /// debug!("Entering function");
 /// debug!("Cache hit for key: {}", key);
 /// debug!("Query plan", "tables" => tables.join(","));
@@ -130,7 +130,7 @@ macro_rules! __log_impl {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```text
 /// // Counter (increments by 1)
 /// metric!(counter "requests_total");
 /// metric!(counter "requests_total", "method" => "GET");
@@ -222,7 +222,7 @@ macro_rules! __metric_impl {
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```text
 /// // Basic span
 /// let result = span!("db_query" => {
 ///     db.query(&sql).await

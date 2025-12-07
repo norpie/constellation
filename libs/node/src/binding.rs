@@ -28,7 +28,7 @@ pub struct AdvertisedEndpoint {
 /// on multiple networks with different addresses (e.g., internal IP vs external IP).
 ///
 /// # Example
-/// ```ignore
+/// ```text
 /// use constellation_fabric::transport::TcpTransportListener;
 /// use constellation_fabric::Codec;
 ///

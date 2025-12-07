@@ -224,7 +224,7 @@ impl RpcClient {
     /// configuring retry, timeout, and backoff options.
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// let response: UserData = rpc
     ///     .call("UsersService.get_user.v1", &GetUserRequest { id: 42 })?
     ///     .await?;
@@ -254,7 +254,7 @@ impl RpcClient {
     /// peer-to-peer communication.
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// let response: VoteResponse = rpc
     ///     .call_peer("node-2", "_raft.request_vote.v1", &vote_request)?
     ///     .await?;

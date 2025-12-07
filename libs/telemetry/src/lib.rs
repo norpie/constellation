@@ -13,7 +13,7 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```text
 //! use constellation_telemetry::{info, metric, span};
 //!
 //! #[handler]

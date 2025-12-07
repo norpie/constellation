@@ -156,7 +156,7 @@ impl TaskHandle {
     /// Cancel the task without waiting for confirmation (fire-and-forget)
     ///
     /// This is useful when you want to cancel with a timeout:
-    /// ```ignore
+    /// ```text
     /// tokio::select! {
     ///     result = handle.cancel() => { /* got confirmation */ }
     ///     _ = tokio::time::sleep(Duration::from_secs(1)) => {
@@ -431,7 +431,7 @@ impl Scheduler {
     /// Returns `None` if no task with that name exists.
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// // Schedule a named task
     /// scheduler.schedule_named("election_timeout", schedule, task).await?;
     ///

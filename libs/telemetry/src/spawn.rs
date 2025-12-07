@@ -14,7 +14,7 @@ use tokio::task::JoinHandle;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// use constellation_telemetry::{spawn, TelemetryContext, info};
 ///
 /// let ctx = TelemetryContext::new("my-service", "node-1");
@@ -60,7 +60,7 @@ where
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// use constellation_telemetry::{spawn_blocking, TelemetryContext, info};
 ///
 /// let ctx = TelemetryContext::new("my-service", "node-1");

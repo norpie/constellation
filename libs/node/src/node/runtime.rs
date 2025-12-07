@@ -80,7 +80,7 @@ impl StartableNode {
     /// 4. Start Raft tasks (election, heartbeat, apply)
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// let node = Node::builder()
     ///     .service_name("MyService")
     ///     .listen(tcp_listener, "default", "tcp", "192.168.1.10:8080")

@@ -150,7 +150,7 @@ impl<SM: StateMachine> RaftNode<SM> {
     /// without taking ownership or cloning it.
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// let value = raft.with_state_machine(|sm| sm.get_value("key")).await;
     /// ```
     pub async fn with_state_machine<F, R>(&self, f: F) -> R

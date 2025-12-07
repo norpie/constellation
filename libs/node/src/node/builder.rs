@@ -76,7 +76,7 @@ impl NodeBuilder {
     /// this function will be called with the original ID to generate a new one.
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// Node::builder()
     ///     .id("service-node")
     ///     .id_fallback(|original_id| {
@@ -98,7 +98,7 @@ impl NodeBuilder {
     /// Defaults to "global" if not set.
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// Node::builder()
     ///     .service_name("MyService")
     ///     .region("us-east")
@@ -125,7 +125,7 @@ impl NodeBuilder {
     /// Individual routes can override these with route-specific constraints.
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// use constellation_node::mesh::{Constraint, ConnectionRules};
     /// use constellation_fabric::Codec;
     ///
@@ -158,7 +158,7 @@ impl NodeBuilder {
     /// for all peer communication.
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// Node::builder()
     ///     .service_name("MyService")
     ///     .id("node-1")
@@ -207,7 +207,7 @@ impl NodeBuilder {
     /// a transport listener with the codecs it supports and the addresses it advertises.
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// use constellation_fabric::transport::TcpTransportListener;
     /// use constellation_fabric::Codec;
     /// use constellation_node::Binding;
@@ -297,7 +297,7 @@ impl NodeBuilder {
     /// over which handlers are registered.
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// // Production: auto-discover all handlers
     /// Node::builder()
     ///     .service_name("MyService")
@@ -321,7 +321,7 @@ impl NodeBuilder {
     /// the same extractors as handlers (Data<T>, etc.).
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// use std::time::Duration;
     ///
     /// Node::builder()

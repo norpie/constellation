@@ -343,7 +343,7 @@ impl ConnectionRules {
 /// with a default fallback for networks without specific rules.
 ///
 /// # Example
-/// ```ignore
+/// ```text
 /// use constellation_node::mesh::{Constraint, ConnectionRules};
 /// use constellation_fabric::Codec;
 ///

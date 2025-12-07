@@ -14,7 +14,7 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```text
 //! use constellation_datapad::{Datapad, DatapadConfig};
 //! use constellation_telemetry::{LogEntry, TelemetryEntry};
 //!

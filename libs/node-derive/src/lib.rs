@@ -7,7 +7,7 @@ use proc_macro::TokenStream;
 /// Generates handler registration code and wrapper for dependency extraction
 ///
 /// # Example
-/// ```ignore
+/// ```text
 /// #[handler]
 /// async fn login(req: LoginRequest, db: Data<DbPool>) -> Result<LoginResponse, MyError> {
 ///     // Handler logic
