@@ -5,5 +5,5 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
-thiserror = "2"
-serde = { workspace = true }
+thiserror.workspace = true
+serde.workspace = true

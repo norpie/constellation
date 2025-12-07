@@ -7,5 +7,5 @@ authors.workspace = true
 [dependencies]
 constellation-telemetry = { path = "../telemetry" }
 sled = "0.34"
-serde = { workspace = true }
-bincode = "1"
+serde.workspace = true
+bincode.workspace = true

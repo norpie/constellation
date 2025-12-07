@@ -9,11 +9,10 @@ constellation-fabric = { path = "../fabric" }
 
 tokio.workspace = true
 serde.workspace = true
-
-async-trait = "0.1"
-thiserror = "2"
-schemars = "0.8"
-smart-default = "0.7"
+thiserror.workspace = true
+async-trait.workspace = true
+schemars.workspace = true
+smart-default.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
