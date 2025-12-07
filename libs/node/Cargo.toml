@@ -9,6 +9,7 @@ constellation-core = { path = "../core" }
 constellation-fabric = { path = "../fabric" }
 constellation-node-derive = { path = "../node-derive" }
 constellation-raft = { path = "../raft" }
+constellation-telemetry = { path = "../telemetry" }
 
 tokio.workspace = true
 serde.workspace = true
