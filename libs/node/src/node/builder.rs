@@ -510,6 +510,18 @@ impl NodeBuilder {
                 TypeId::of::<Data<constellation_telemetry::BufferCollector>>(),
                 Box::new(Data::new(collector)),
             );
+
+            // Register service name and node ID for scheduler telemetry
+            data.insert(
+                TypeId::of::<Data<crate::scheduler::NodeServiceName>>(),
+                Box::new(Data::new(crate::scheduler::NodeServiceName(
+                    service_name.clone(),
+                ))),
+            );
+            data.insert(
+                TypeId::of::<Data<crate::scheduler::NodeIdentity>>(),
+                Box::new(Data::new(crate::scheduler::NodeIdentity(node_id.clone()))),
+            );
         }
 
         // Create shutdown channel

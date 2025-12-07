@@ -444,12 +444,28 @@ async fn test_telemetry_context_flows_through_handlers() {
         span_names
     );
 
-    // Verify trace_id was propagated (all spans should have the same trace_id)
-    for span in &spans {
+    // Verify trace_id was propagated for handler spans (not framework task spans)
+    // Framework tasks (like leader_heartbeat) get fresh traces, which is correct
+    let handler_spans: Vec<_> = spans
+        .iter()
+        .filter(|s| {
+            s.name.starts_with("rpc.server/")
+                || s.name == "deserialize"
+                || s.name == "serialize"
+        })
+        .collect();
+
+    assert!(
+        handler_spans.len() >= 3,
+        "Expected at least 3 handler spans, got {}",
+        handler_spans.len()
+    );
+
+    for span in handler_spans {
         assert_eq!(
             span.common.trace_id.as_ref().map(|t| t.as_str()),
             Some(trace_id.as_str()),
-            "Span {} should have propagated trace_id",
+            "Handler span {} should have propagated trace_id",
             span.name
         );
     }

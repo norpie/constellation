@@ -5,6 +5,7 @@
 
 use crate::config::Config;
 use crate::node::Data;
+use crate::telemetry::{BufferCollector, Span, TelemetryContext};
 use chrono::{DateTime, Utc};
 use rand::Rng;
 use std::any::{Any, TypeId};
@@ -15,6 +16,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, watch, RwLock};
 use uuid::Uuid;
+
+/// Wrapper for service name (extractable by scheduler for telemetry)
+#[derive(Clone)]
+pub struct NodeServiceName(pub String);
+
+/// Wrapper for node ID (extractable by scheduler for telemetry)
+#[derive(Clone)]
+pub struct NodeIdentity(pub String);
 
 // ============================================================================
 // Public Types
@@ -832,10 +841,49 @@ fn run_due_tasks(
 
         let task_fn = Arc::clone(&task_state.task);
         let command_tx = command_tx.clone();
+        let task_name = task_state.name.clone();
+
+        // Extract telemetry components for context wrapping
+        let collector: Option<Data<BufferCollector>> = data
+            .get(&TypeId::of::<Data<BufferCollector>>())
+            .and_then(|any| any.downcast_ref::<Data<BufferCollector>>())
+            .cloned();
+        let service_name: Option<NodeServiceName> = data
+            .get(&TypeId::of::<Data<NodeServiceName>>())
+            .and_then(|any| any.downcast_ref::<Data<NodeServiceName>>())
+            .map(|d| (**d).clone());
+        let node_id: Option<NodeIdentity> = data
+            .get(&TypeId::of::<Data<NodeIdentity>>())
+            .and_then(|any| any.downcast_ref::<Data<NodeIdentity>>())
+            .map(|d| (**d).clone());
 
         tokio::spawn(async move {
             let start = Instant::now();
-            task_fn.call(ctx).await;
+
+            // Wrap task execution in telemetry context if available
+            if let (Some(collector), Some(service), Some(node)) =
+                (collector, service_name, node_id)
+            {
+                let telemetry_ctx =
+                    TelemetryContext::new(&service.0, &node.0, collector);
+
+                telemetry_ctx
+                    .scope(async {
+                        // Create span for task execution
+                        let span_name = task_name
+                            .as_ref()
+                            .map(|n| format!("task/{}", n))
+                            .unwrap_or_else(|| format!("task/{}", id.0));
+                        let _span = Span::enter(&span_name);
+
+                        task_fn.call(ctx).await;
+                    })
+                    .await;
+            } else {
+                // No telemetry - execute directly
+                task_fn.call(ctx).await;
+            }
+
             let duration = start.elapsed();
 
             let _ = command_tx
