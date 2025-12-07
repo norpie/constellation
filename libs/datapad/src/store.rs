@@ -233,40 +233,46 @@ fn deserialize_entry(bytes: &[u8]) -> Result<TelemetryEntry> {
     serde_json::from_slice(bytes).map_err(|e| Error::Serialization(e.to_string()))
 }
 
-/// Append a primary key to an index entry.
-/// Index values are lists of primary keys encoded as: [count: u32][key1][key2]...
-fn append_to_index(tree: &sled::Tree, index_key: &[u8], primary_key: &[u8]) -> Result<()> {
-    tree.update_and_fetch(index_key, |existing| {
-        let mut data = existing.map(|v| v.to_vec()).unwrap_or_default();
-        data.extend_from_slice(primary_key);
-        Some(data)
-    })?;
+/// Separator byte between index value and primary key in composite index keys.
+pub(crate) const INDEX_SEPARATOR: u8 = 0x00;
+
+/// Build a composite index key: {index_value}{separator}{primary_key}
+pub(crate) fn build_index_key(index_value: &[u8], primary_key: &[u8]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(index_value.len() + 1 + primary_key.len());
+    key.extend_from_slice(index_value);
+    key.push(INDEX_SEPARATOR);
+    key.extend_from_slice(primary_key);
+    key
+}
+
+/// Build the start of a range scan for an index value.
+pub(crate) fn index_range_start(index_value: &[u8]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(index_value.len() + 1);
+    key.extend_from_slice(index_value);
+    key.push(INDEX_SEPARATOR);
+    key
+}
+
+/// Build the end of a range scan for an index value (exclusive).
+pub(crate) fn index_range_end(index_value: &[u8]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(index_value.len() + 1);
+    key.extend_from_slice(index_value);
+    key.push(INDEX_SEPARATOR + 1); // One past the separator
+    key
+}
+
+/// Add a primary key to an index using composite key strategy.
+/// Key format: {index_value}\x00{primary_key} -> empty value
+fn append_to_index(tree: &sled::Tree, index_value: &[u8], primary_key: &[u8]) -> Result<()> {
+    let composite_key = build_index_key(index_value, primary_key);
+    tree.insert(composite_key, &[] as &[u8])?;
     Ok(())
 }
 
-/// Remove a primary key from an index entry.
-fn remove_from_index(tree: &sled::Tree, index_key: &[u8], primary_key: &[u8]) -> Result<()> {
-    tree.update_and_fetch(index_key, |existing| {
-        let Some(data) = existing else {
-            return None;
-        };
-
-        let key_size = primary_key.len();
-        let mut result = Vec::new();
-
-        // Filter out the key we're removing
-        for chunk in data.chunks_exact(key_size) {
-            if chunk != primary_key {
-                result.extend_from_slice(chunk);
-            }
-        }
-
-        if result.is_empty() {
-            None
-        } else {
-            Some(result)
-        }
-    })?;
+/// Remove a primary key from an index.
+fn remove_from_index(tree: &sled::Tree, index_value: &[u8], primary_key: &[u8]) -> Result<()> {
+    let composite_key = build_index_key(index_value, primary_key);
+    tree.remove(composite_key)?;
     Ok(())
 }
 

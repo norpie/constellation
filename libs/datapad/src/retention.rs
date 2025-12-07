@@ -154,28 +154,11 @@ impl Datapad {
     }
 }
 
-/// Remove a primary key from an index entry.
-fn remove_key_from_index(tree: &sled::Tree, index_key: &[u8], primary_key: &[u8]) -> Result<()> {
-    tree.update_and_fetch(index_key, |existing| {
-        let Some(data) = existing else {
-            return None;
-        };
-
-        let key_size = primary_key.len();
-        let mut result = Vec::new();
-
-        for chunk in data.chunks_exact(key_size) {
-            if chunk != primary_key {
-                result.extend_from_slice(chunk);
-            }
-        }
-
-        if result.is_empty() {
-            None
-        } else {
-            Some(result)
-        }
-    })?;
+/// Remove a primary key from an index entry using composite key format.
+fn remove_key_from_index(tree: &sled::Tree, index_value: &[u8], primary_key: &[u8]) -> Result<()> {
+    use crate::store::build_index_key;
+    let composite_key = build_index_key(index_value, primary_key);
+    tree.remove(composite_key)?;
     Ok(())
 }
 

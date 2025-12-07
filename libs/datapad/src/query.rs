@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::key::{PrimaryKey, PRIMARY_KEY_SIZE};
-use crate::store::Datapad;
+use crate::store::{index_range_end, index_range_start, Datapad, INDEX_SEPARATOR};
 use constellation_telemetry::{EntryType, Level, TelemetryEntry, Timestamp};
 
 /// Filter criteria for queries.
@@ -158,39 +158,27 @@ impl<'a> QueryBuilder<'a> {
         // If we have a trace_id filter, use the trace index
         if let Some(ref trace_id) = self.filter.trace_id {
             let trace_tree = db.open_tree("idx_trace")?;
-            if let Some(keys) = trace_tree.get(trace_id.as_bytes())? {
-                return Ok(extract_primary_keys(&keys));
-            }
-            return Ok(Vec::new());
+            return Ok(scan_index(&trace_tree, trace_id.as_bytes()));
         }
 
         // If we have a service filter and no time range, use service index
         if let Some(ref service) = self.filter.service {
             if self.filter.start_time.is_none() && self.filter.end_time.is_none() {
                 let service_tree = db.open_tree("idx_service")?;
-                if let Some(keys) = service_tree.get(service.as_bytes())? {
-                    return Ok(extract_primary_keys(&keys));
-                }
-                return Ok(Vec::new());
+                return Ok(scan_index(&service_tree, service.as_bytes()));
             }
         }
 
         // If we have a metric_name filter, use metric index
         if let Some(ref metric_name) = self.filter.metric_name {
             let metric_tree = db.open_tree("idx_metric")?;
-            if let Some(keys) = metric_tree.get(metric_name.as_bytes())? {
-                return Ok(extract_primary_keys(&keys));
-            }
-            return Ok(Vec::new());
+            return Ok(scan_index(&metric_tree, metric_name.as_bytes()));
         }
 
         // If we have a level filter, use level index
         if let Some(level) = self.filter.level {
             let level_tree = db.open_tree("idx_level")?;
-            if let Some(keys) = level_tree.get(&[level.as_u8()])? {
-                return Ok(extract_primary_keys(&keys));
-            }
-            return Ok(Vec::new());
+            return Ok(scan_index(&level_tree, &[level.as_u8()]));
         }
 
         // Fall back to time range scan on primary tree
@@ -282,10 +270,23 @@ impl<'a> QueryBuilder<'a> {
     }
 }
 
-/// Extract primary keys from index value (concatenated 25-byte keys).
-fn extract_primary_keys(data: &[u8]) -> Vec<Vec<u8>> {
-    data.chunks_exact(PRIMARY_KEY_SIZE)
-        .map(|chunk| chunk.to_vec())
+/// Scan an index tree for all primary keys matching an index value.
+/// Uses range scan with composite key format: {index_value}\x00{primary_key}
+fn scan_index(tree: &sled::Tree, index_value: &[u8]) -> Vec<Vec<u8>> {
+    let start = index_range_start(index_value);
+    let end = index_range_end(index_value);
+
+    tree.range(start..end)
+        .filter_map(|item| {
+            let (key, _) = item.ok()?;
+            // Extract primary key from composite key (after separator)
+            let separator_pos = index_value.len();
+            if key.len() > separator_pos + 1 && key[separator_pos] == INDEX_SEPARATOR {
+                Some(key[separator_pos + 1..].to_vec())
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
