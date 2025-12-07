@@ -1,9 +1,10 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::common::CommonFields;
 
 /// Type of metric
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MetricType {
     /// Monotonically increasing counter (e.g., request count)
@@ -31,7 +32,7 @@ impl std::fmt::Display for MetricType {
 }
 
 /// A metric entry
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MetricEntry {
     /// Common fields (id, timestamp, service, node_id, trace_id, span_id, tags)
     pub common: CommonFields,

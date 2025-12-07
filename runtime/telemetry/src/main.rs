@@ -3,10 +3,12 @@
 //! Central service for collecting, storing, and querying telemetry data
 //! (logs, metrics, traces) from all nodes in the mesh.
 
+use constellation_datapad::{Datapad, DatapadConfig, StorageMode};
 use constellation_fabric::transport::TcpTransportListener;
 use constellation_node::{Binding, Node};
 
 mod config;
+mod error;
 mod handlers;
 mod scraper;
 
@@ -15,6 +17,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = config::TelemetryServiceConfig::default();
 
     println!("Starting Telemetry Service on {}", config.listen_addr);
+
+    // Initialize storage
+    let datapad_config = DatapadConfig {
+        storage: StorageMode::Path(config.storage_path.clone().into()),
+        ..Default::default()
+    };
+    let datapad = Datapad::open(&datapad_config)?;
+
+    println!("Datapad storage initialized at {}", config.storage_path);
 
     // Bind listener
     let listener = TcpTransportListener::bind(config.listen_addr.parse()?)
@@ -28,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .service_name("TelemetryService")
         .id(&config.node_id)
         .binding(binding)
-        // TODO: Add Datapad as Data<Datapad>
+        .data(datapad)
         // TODO: Add scraper config
         // TODO: Schedule scraper task
         .build()?;

@@ -1,9 +1,10 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::common::{CommonFields, SpanId, Timestamp};
 
 /// Span completion status
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SpanStatus {
     /// Span completed successfully
@@ -34,7 +35,7 @@ impl std::fmt::Display for SpanStatus {
 }
 
 /// A span entry representing a unit of work in a trace
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SpanEntry {
     /// Common fields (id, timestamp, service, node_id, trace_id, span_id, tags)
     pub common: CommonFields,

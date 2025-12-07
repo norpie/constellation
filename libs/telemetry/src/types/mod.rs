@@ -8,10 +8,11 @@ pub use log::{Level, LogEntry};
 pub use metric::{MetricEntry, MetricType};
 pub use span::{SpanEntry, SpanStatus};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Entry type discriminator for storage
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[repr(u8)]
 pub enum EntryType {
     Log = 0,
@@ -35,7 +36,7 @@ impl EntryType {
 }
 
 /// Unified telemetry entry enum
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum TelemetryEntry {
     Log(LogEntry),
     Metric(MetricEntry),

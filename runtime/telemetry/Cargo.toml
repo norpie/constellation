@@ -17,5 +17,15 @@ tokio.workspace = true
 # Serialization
 serde.workspace = true
 
+# Schema
+schemars.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Handler macro dependencies
+async-trait.workspace = true
+inventory = "0.3"
+
 # CLI/Config (for later)
 # clap = { version = "4", features = ["derive"] }

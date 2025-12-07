@@ -50,7 +50,7 @@ impl std::fmt::Display for Level {
 }
 
 /// A log entry
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LogEntry {
     /// Common fields (id, timestamp, service, node_id, trace_id, span_id, tags)
     pub common: CommonFields,

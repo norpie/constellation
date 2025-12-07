@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -7,7 +8,7 @@ use ulid::Ulid;
 pub type Timestamp = u64;
 
 /// 128-bit trace ID in OpenTelemetry format (32 hex chars)
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct TraceId(String);
 
 impl TraceId {
@@ -45,7 +46,7 @@ impl fmt::Display for TraceId {
 }
 
 /// 64-bit span ID in OpenTelemetry format (16 hex chars)
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct SpanId(String);
 
 impl SpanId {
@@ -83,8 +84,8 @@ impl fmt::Display for SpanId {
 }
 
 /// Entry ID using ULID (time-sortable, 26 chars)
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct EntryId(Ulid);
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct EntryId(#[schemars(with = "String")] Ulid);
 
 impl EntryId {
     /// Generate a new ULID
@@ -131,7 +132,7 @@ impl fmt::Display for EntryId {
 }
 
 /// Common fields present on all telemetry entries
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CommonFields {
     /// Unique entry identifier (ULID, time-sorted)
     pub id: EntryId,
