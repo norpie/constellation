@@ -74,7 +74,7 @@ async fn test_auto_discovery_enabled() {
 
     // Get handler via auto-discovery
     let handler = &PING_HANDLER;
-    let response_bytes = handler.call(node.node(), &request).await.unwrap();
+    let response_bytes = handler.call(node.node(), &request, &codec).await.unwrap();
 
     // Decode response
     let response: PingResponse = codec.decode(&response_bytes).unwrap();
@@ -105,7 +105,7 @@ async fn test_auto_discovery_multiple_versions() {
     };
 
     let handler_v1 = &PING_HANDLER;
-    let response_bytes_v1 = handler_v1.call(node.node(), &request_v1).await.unwrap();
+    let response_bytes_v1 = handler_v1.call(node.node(), &request_v1, &codec).await.unwrap();
     let response_v1: PingResponse = codec.decode(&response_bytes_v1).unwrap();
     assert_eq!(response_v1.reply, "pong");
 
@@ -117,7 +117,7 @@ async fn test_auto_discovery_multiple_versions() {
     };
 
     let handler_v2 = &PING_V2_HANDLER;
-    let response_bytes_v2 = handler_v2.call(node.node(), &request_v2).await.unwrap();
+    let response_bytes_v2 = handler_v2.call(node.node(), &request_v2, &codec).await.unwrap();
     let response_v2: PingResponse = codec.decode(&response_bytes_v2).unwrap();
     assert_eq!(response_v2.reply, "pong v2");
 }

@@ -29,9 +29,9 @@ impl Handler for LoginHandler {
         &self,
         node: &Node,
         request: &RpcRequest,
+        codec: &Codec,
     ) -> std::result::Result<Vec<u8>, constellation_node::HandlerError> {
-        // Decode request using bincode
-        let codec = Codec::Bincode;
+        // Decode request
         let req: LoginRequest = codec
             .decode(&request.payload)
             .map_err(|e| {
@@ -152,7 +152,7 @@ async fn test_handler_call() {
 
     // Call handler
     let handler = &LoginHandler;
-    let response_bytes = handler.call(node.node(), &request).await.unwrap();
+    let response_bytes = handler.call(node.node(), &request, &codec).await.unwrap();
 
     // Decode response
     let response: LoginResponse = codec.decode(&response_bytes).unwrap();

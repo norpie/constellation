@@ -241,6 +241,9 @@ async fn handle_connection(transport: Box<dyn constellation_fabric::transport::T
             payload,
         };
 
+        // Get codec for handler (clone to avoid borrow issues with async move)
+        let codec = channel.codec().clone();
+
         // Execute handler, optionally wrapped in telemetry context
         let result = if let Some(ref collector) = collector {
             // Create telemetry context from incoming trace (or generate fresh)
@@ -262,7 +265,7 @@ async fn handle_connection(transport: Box<dyn constellation_fabric::transport::T
                 let mut span_guard = Span::enter(&span_name);
                 span_guard.set_tag("rpc.route", &route);
 
-                let result = match handler.call(&node_clone, &request).await {
+                let result = match handler.call(&node_clone, &request, &codec).await {
                     Ok(success_payload) => crate::rpc::ResponseResult::Success(success_payload),
                     Err(handler_err) => {
                         span_guard.set_error();
@@ -281,7 +284,7 @@ async fn handle_connection(transport: Box<dyn constellation_fabric::transport::T
             }).await
         } else {
             // No telemetry - execute handler directly
-            match handler.call(&node, &request).await {
+            match handler.call(&node, &request, &codec).await {
                 Ok(success_payload) => crate::rpc::ResponseResult::Success(success_payload),
                 Err(handler_err) => {
                     eprintln!(

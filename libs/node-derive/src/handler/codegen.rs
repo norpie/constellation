@@ -61,6 +61,7 @@ fn generate_handler_impl(info: &HandlerInfo) -> TokenStream {
                 &self,
                 node: &#crate_path::Node,
                 request: &#crate_path::rpc::RpcRequest,
+                codec: &::constellation_fabric::Codec,
             ) -> ::std::result::Result<Vec<u8>, #crate_path::HandlerError> {
                 #decode_request
                 #extract_deps
@@ -81,7 +82,7 @@ fn generate_decode(info: &HandlerInfo) -> TokenStream {
     quote! {
         let #request_param: #request_type = {
             let _span = #crate_path::telemetry::Span::enter("deserialize");
-            ::constellation_fabric::Codec::Bincode
+            codec
                 .decode(&request.payload)
                 .map_err(|e| #crate_path::HandlerError {
                     category: #crate_path::ErrorCategory::ClientError,
@@ -150,7 +151,7 @@ fn generate_call(info: &HandlerInfo) -> TokenStream {
                 let category = e.error_category();
 
                 // Serialize the error
-                let error_payload = ::constellation_fabric::Codec::Bincode.encode(&e)
+                let error_payload = codec.encode(&e)
                     .map_err(|_| #crate_path::HandlerError {
                         category: #crate_path::ErrorCategory::ServerError,
                         payload: Vec::new(), // Failed to serialize error - framework-level problem
@@ -173,7 +174,7 @@ fn generate_encode(info: &HandlerInfo) -> TokenStream {
     quote! {
         {
             let _span = #crate_path::telemetry::Span::enter("serialize");
-            ::constellation_fabric::Codec::Bincode.encode(&response)
+            codec.encode(&response)
                 .map_err(|_| #crate_path::HandlerError {
                     category: #crate_path::ErrorCategory::ServerError,
                     payload: Vec::new(), // Failed to encode response - framework-level problem

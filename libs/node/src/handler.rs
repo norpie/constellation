@@ -5,12 +5,13 @@
 pub trait Handler: Send + Sync {
     /// Handle an RPC request
     ///
-    /// Handlers decode the request payload and encode the response using bincode.
+    /// Handlers decode the request payload and encode the response using the provided codec.
     /// Returns either serialized success bytes or a HandlerError with category + error payload.
     async fn call(
         &self,
         node: &crate::Node,
         request: &crate::rpc::RpcRequest,
+        codec: &constellation_fabric::Codec,
     ) -> std::result::Result<Vec<u8>, crate::rpc::HandlerError>;
 }
 
